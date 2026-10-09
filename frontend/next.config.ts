@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
         // This intercepts any frontend fetch request to /api/blitz/...
         source: '/api/blitz/:path*',
         // This forwards it securely behind the scenes to your backend server
-        destination: 'https://blitz.cloud*',
+        destination: 'https://tca-admin.noleafet.blitz.cloud*',
       },
     ]
   },
