@@ -1,11 +1,14 @@
 import logging
+import os
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from playwright.sync_api import sync_playwright
 
 from alerts.models import AppConfiguration
 from alerts.services import check_alerts
@@ -27,6 +30,17 @@ class Command(BaseCommand):
         if interval < 1:
             raise CommandError("The configured polling interval must be at least 1 second.")
         interval_state = {"seconds": interval}
+        site_visit_url = os.getenv("SITE_VISIT_URL", "").strip()
+        try:
+            site_visit_interval = int(os.getenv("SITE_VISIT_INTERVAL_SECONDS", "600"))
+        except ValueError as exc:
+            raise CommandError("SITE_VISIT_INTERVAL_SECONDS must be an integer.") from exc
+        if site_visit_interval < 1:
+            raise CommandError("SITE_VISIT_INTERVAL_SECONDS must be at least 1 second.")
+        if site_visit_url:
+            parsed_url = urlsplit(site_visit_url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                raise CommandError("SITE_VISIT_URL must be an absolute HTTP or HTTPS URL.")
 
         scheduler = BlockingScheduler(timezone=timezone.get_current_timezone())
 
@@ -54,6 +68,27 @@ class Command(BaseCommand):
                     interval_state["seconds"] = current_interval
                     logger.info("Alert polling interval updated to %s seconds", current_interval)
 
+        def visit_configured_site():
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox"],
+                    )
+                    try:
+                        page = browser.new_page()
+                        response = page.goto(site_visit_url, wait_until="domcontentloaded", timeout=30_000)
+                        page.wait_for_timeout(5_000)
+                        status_code = response.status if response else "no response"
+                        self.stdout.write(
+                            f"Visited {site_visit_url} in headless Chromium; HTTP status: {status_code}."
+                        )
+                    finally:
+                        browser.close()
+            except Exception:
+                logger.exception("Scheduled browser visit failed for %s", site_visit_url)
+                self.stderr.write(self.style.ERROR("Browser visit failed; it will be retried on the next run."))
+
         def report_job(event):
             if event.exception:
                 logger.error("Scheduler job failed: %s", event.exception)
@@ -69,6 +104,20 @@ class Command(BaseCommand):
             max_instances=1,
             coalesce=True,
         )
+        if site_visit_url:
+            scheduler.add_job(
+                visit_configured_site,
+                trigger=IntervalTrigger(seconds=site_visit_interval, timezone=timezone.get_current_timezone()),
+                id="visit-configured-site",
+                next_run_time=timezone.now(),
+                max_instances=1,
+                coalesce=True,
+            )
+            self.stdout.write(self.style.SUCCESS(
+                f"Browser visit enabled for {site_visit_url}; repeating every {site_visit_interval}s."
+            ))
+        else:
+            self.stdout.write("Browser visit disabled; set SITE_VISIT_URL to enable it.")
         self.stdout.write(self.style.SUCCESS(
             f"Alert scheduler started; checking immediately, then every {interval}s. Ctrl+C stops it."
         ))

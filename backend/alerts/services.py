@@ -211,18 +211,31 @@ def send_telegram_test(notification, *, token=None, chat_id=None):
 
 def _notify(event, configuration):
     logger.info("ALERT %s | %s", event.title, event.message)
-    notification = Notification.load()
-    token = notification.telegram_bot_token
-    chat_id = notification.telegram_chat_id
-    if not configuration.notification_enabled or not token or not chat_id:
+    if not configuration.notification_enabled:
         return
-    try:
-        telegram_request(notification, "sendMessage", {
-            "chat_id": chat_id,
-            "text": f"🔔 {event.title}\n{event.message}",
-        })
-    except (requests.RequestException, ValueError):
-        logger.exception("Telegram alert delivery failed")
+
+    # Replace Notification.load() with a method that fetches all table rows/records
+    notifications = Notification.load_all()  # Update this method name to match your ORM or loader
+
+    for notification in notifications:
+        token = notification.telegram_bot_token
+        chat_id = notification.telegram_chat_id
+
+        if not token or not chat_id:
+            continue
+
+        try:
+            telegram_request(
+                notification,
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": f"🔔 {event.title}\n{event.message}",
+                },
+            )
+        except (requests.RequestException, ValueError):
+            logger.exception("Telegram alert delivery failed for chat_id: %s", chat_id)
+
 
 
 def check_alerts(*, stdout=None):

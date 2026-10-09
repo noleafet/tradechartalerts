@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    WEB_CONCURRENCY=3
+    WEB_CONCURRENCY=3 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
@@ -11,6 +12,9 @@ RUN addgroup --system app && adduser --system --ingroup app app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 COPY supervisord.conf /etc/supervisor/supervisord.conf

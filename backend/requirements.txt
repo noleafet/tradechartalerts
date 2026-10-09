@@ -8,3 +8,4 @@ gunicorn>=23,<24
 whitenoise>=6.9,<7
 supervisor>=4.2,<5
 APScheduler>=3.10,<4
+playwright>=1.55,<2
