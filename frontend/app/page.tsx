@@ -316,6 +316,7 @@ export default function Home() {
             <label className="telegram-field">Ad-hoc bot token<input type="password" autoComplete="off" value={telegramTestToken} onChange={(event) => setTelegramTestToken(event.target.value)} placeholder="Enter for this session only" /></label>
             <label className="telegram-field">Ad-hoc chat ID<input autoComplete="off" value={telegramTestChat} onChange={(event) => setTelegramTestChat(event.target.value)} placeholder="Find it with your bot token" /></label>
             <div className="telegram-actions"><button className="refresh" disabled={!telegramTestToken.trim() || findingTelegram} onClick={() => void findTelegramChatFromBackend()}>{findingTelegram ? "Finding…" : "Find my chat ID"}</button><button className="refresh" disabled={!telegramTestToken.trim() || !telegramTestChat.trim() || testingTelegram} onClick={() => void testTelegramFromBackend()}>{testingTelegram ? "Sending…" : "Test Telegram"}</button></div>
+            <p className="telegram-status">{telegramStatus}</p>          
           </section>
       </div>
       <footer><span>TRADECHARTALERT / MARKET ALERTS</span><span>Prices via {exchange === "binance" ? "Binance" : "Bybit"} public market data · UTC timestamps</span></footer>
