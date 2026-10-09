@@ -1,20 +1,18 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone", // Keep your standalone output for Docker/Vercel
+  output: "standalone", 
   
   async rewrites() {
     return [
       {
-        // This intercepts any frontend fetch request to /api/blitz/...
+        // 1. Catches frontend requests directed at /api/blitz/
         source: '/api/blitz/:path*',
-        // This forwards it securely behind the scenes to your backend server
-        destination: 'https://tca-admin.noleafet.blitz.cloud*',
+        // 2. Maps the variable path correctly to your live tca-admin subdomain
+        destination: 'https://blitz.cloud*',
       },
     ]
   },
 };
 
 export default nextConfig;
-
-
