@@ -14,8 +14,7 @@ type EventItem = { id: number; symbol: string; title: string; message: string; t
 type TelegramStatus = { configured: boolean; enabled: boolean; chat_hint: string };
 type Exchange = "binance" | "bybit";
 type ToastItem = { id: number; title: string; message: string };
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
-const ADMIN_URL = `${API.replace(/\/api\/?$/, "")}/admin/alerts/appconfiguration/1/change/`;
+const API = "/api/blitz";
 const conditions: Record<string, string> = {
   cross_up: "crosses above", cross_down: "crosses below", cross: "crosses",
   above: "is above", below: "is below",
