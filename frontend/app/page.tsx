@@ -14,7 +14,7 @@ type EventItem = { id: number; symbol: string; title: string; message: string; t
 type TelegramStatus = { configured: boolean; enabled: boolean; chat_hint: string };
 type Exchange = "binance" | "bybit";
 type ToastItem = { id: number; title: string; message: string };
-const API = "/api/blitz";
+const API = "/api/proxy";
 const conditions: Record<string, string> = {
   cross_up: "crosses above", cross_down: "crosses below", cross: "crosses",
   above: "is above", below: "is below",
@@ -224,7 +224,7 @@ export default function Home() {
         body: JSON.stringify({ bot_token: telegramTestToken.trim() }), cache: "no-store",
       });
       const payload = await response.json().catch(() => ({})) as { detail?: string; chat_id?: string; chat_name?: string };
-      if (response.status === 403) throw new Error("Request blocked. Refresh the page and try again.");
+      if (response.status === 403) throw new Error(payload.detail ?? "Request blocked. Refresh the page and try again.");
       if (!response.ok) throw new Error(payload.detail ?? `Backend request failed (${response.status}).`);
       setTelegramTestChat(payload.chat_id ?? "");
       setTelegramStatus(`Found ${payload.chat_name ?? "Telegram chat"}. The credentials are only used for this test session.`);
@@ -242,7 +242,7 @@ export default function Home() {
         body: JSON.stringify({ bot_token: telegramTestToken.trim(), chat_id: telegramTestChat.trim() }), cache: "no-store",
       });
       const payload = await response.json().catch(() => ({})) as { detail?: string };
-      if (response.status === 403) throw new Error("Request blocked. Refresh the page and try again.");
+      if (response.status === 403) throw new Error(payload.detail ?? "Request blocked. Refresh the page and try again.");
       if (!response.ok) throw new Error(payload.detail ?? `Backend request failed (${response.status}).`);
       setTelegramStatus(payload.detail ?? "Test message sent. Check Telegram.");
     } catch (reason) {

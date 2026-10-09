@@ -5,8 +5,8 @@ RUN npm install
 
 FROM node:20-alpine AS builder
 WORKDIR /app
-ARG API_PROXY_TARGET=https://tca-admin.noleafet.blitz.cloud/api
-ENV API_PROXY_TARGET=${API_PROXY_TARGET}
+ARG BACKEND_URL=http://localhost:8000
+ENV BACKEND_URL=${BACKEND_URL}
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

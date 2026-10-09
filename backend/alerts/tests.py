@@ -118,13 +118,13 @@ class TelegramTestApiTests(TestCase):
         self.notification.save()
         self.client = APIClient(enforce_csrf_checks=True)
 
-    @override_settings(DEBUG=False)
+    @override_settings(DEBUG=False, CSRF_TRUSTED_ORIGINS=["https://tca.noleafet.blitz.cloud"])
     @patch("alerts.views.send_telegram_test")
     def test_any_user_can_send_test_message_with_csrf(self, send_test):
         csrf = self.client.get("/api/telegram/csrf/")
         response = self.client.post(
             "/api/telegram/test/", {"bot_token": "adhoc-token", "chat_id": "987654321"}, format="json",
-            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"],
+            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"], HTTP_ORIGIN="https://tca.noleafet.blitz.cloud",
         )
 
         self.assertEqual(csrf.status_code, 200)
@@ -155,7 +155,7 @@ class TelegramTestApiTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
-    @override_settings(DEBUG=False)
+    @override_settings(DEBUG=False, CSRF_TRUSTED_ORIGINS=["https://tca.noleafet.blitz.cloud"])
     @patch("alerts.views.find_telegram_chat")
     def test_any_user_can_find_chat_without_admin_session(self, find_chat):
         find_chat.return_value = {"id": 987654321, "first_name": "Ad hoc"}
@@ -163,7 +163,7 @@ class TelegramTestApiTests(TestCase):
 
         response = self.client.post(
             "/api/telegram/find-chat/", {"bot_token": "adhoc-token"}, format="json",
-            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"],
+            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"], HTTP_ORIGIN="https://tca.noleafet.blitz.cloud",
         )
 
         self.assertEqual(csrf.status_code, 200)

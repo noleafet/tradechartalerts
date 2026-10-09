@@ -89,11 +89,11 @@ STORAGES = {
 }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-CORS_ALLOWED_ORIGINS = [origin for origin in os.getenv(
-    "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
-).split(",") if origin]
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+CORS_ALLOWED_ORIGINS = [FRONTEND_URL]
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([FRONTEND_URL, BACKEND_URL]))
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],

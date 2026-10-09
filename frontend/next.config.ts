@@ -4,10 +4,11 @@ const nextConfig: NextConfig = {
   output: "standalone", 
   skipTrailingSlashRedirect: true,
   async rewrites() {
-    const apiTarget = (process.env.API_PROXY_TARGET ?? "https://tca-admin.noleafet.blitz.cloud/api").replace(/\/$/, "");
+    const backendUrl = (process.env.BACKEND_URL ?? "http://localhost:8000").replace(/\/+$/, "");
+    const apiTarget = `${backendUrl}/api`;
     return [
       {
-        source: "/api/blitz/:path*",
+        source: "/api/proxy/:path*",
         destination: `${apiTarget}/:path*/`,
       },
       {

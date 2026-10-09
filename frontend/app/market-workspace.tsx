@@ -6,7 +6,7 @@ import {
   type CandlestickData, type UTCTimestamp,
 } from "lightweight-charts";
 
-const API = "/api/blitz";
+const API = "/api/proxy";
 const intervals = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"] as const;
 const lineTools = ["trend", "ray", "hline", "hray"] as const;
 type Tool = (typeof lineTools)[number];
