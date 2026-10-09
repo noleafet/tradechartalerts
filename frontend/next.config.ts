@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
         source: "/api/blitz/:path*",
         destination: `${apiTarget}/:path*`,
       },
+      {
+        source: "/api/:path*",
+        destination: `${apiTarget}/:path*`,
+      },
     ];
   },
 };
