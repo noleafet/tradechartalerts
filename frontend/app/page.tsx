@@ -224,7 +224,7 @@ export default function Home() {
         body: JSON.stringify({ bot_token: telegramTestToken.trim() }), cache: "no-store",
       });
       const payload = await response.json().catch(() => ({})) as { detail?: string; chat_id?: string; chat_name?: string };
-      if (response.status === 403) throw new Error("Sign in to Django admin in this browser first, then retry.");
+      if (response.status === 403) throw new Error("Request blocked. Refresh the page and try again.");
       if (!response.ok) throw new Error(payload.detail ?? `Backend request failed (${response.status}).`);
       setTelegramTestChat(payload.chat_id ?? "");
       setTelegramStatus(`Found ${payload.chat_name ?? "Telegram chat"}. The credentials are only used for this test session.`);
@@ -242,7 +242,7 @@ export default function Home() {
         body: JSON.stringify({ bot_token: telegramTestToken.trim(), chat_id: telegramTestChat.trim() }), cache: "no-store",
       });
       const payload = await response.json().catch(() => ({})) as { detail?: string };
-      if (response.status === 403) throw new Error("Sign in to Django admin in this browser first, then retry.");
+      if (response.status === 403) throw new Error("Request blocked. Refresh the page and try again.");
       if (!response.ok) throw new Error(payload.detail ?? `Backend request failed (${response.status}).`);
       setTelegramStatus(payload.detail ?? "Test message sent. Check Telegram.");
     } catch (reason) {
@@ -315,7 +315,6 @@ export default function Home() {
             <label className="telegram-field">Ad-hoc bot token<input type="password" autoComplete="off" value={telegramTestToken} onChange={(event) => setTelegramTestToken(event.target.value)} placeholder="Enter for this session only" /></label>
             <label className="telegram-field">Ad-hoc chat ID<input autoComplete="off" value={telegramTestChat} onChange={(event) => setTelegramTestChat(event.target.value)} placeholder="Find it with your bot token" /></label>
             <div className="telegram-actions"><button className="refresh" disabled={!telegramTestToken.trim() || findingTelegram} onClick={() => void findTelegramChatFromBackend()}>{findingTelegram ? "Finding…" : "Find my chat ID"}</button><button className="refresh" disabled={!telegramTestToken.trim() || !telegramTestChat.trim() || testingTelegram} onClick={() => void testTelegramFromBackend()}>{testingTelegram ? "Sending…" : "Test Telegram"}</button></div>
-            <p className="telegram-status">{telegramStatus}</p>          
           </section>
       </div>
       <footer><span>TRADECHARTALERT / MARKET ALERTS</span><span>Prices via {exchange === "binance" ? "Binance" : "Bybit"} public market data · UTC timestamps</span></footer>

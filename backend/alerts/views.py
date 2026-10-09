@@ -1,12 +1,11 @@
 import requests
-from django.conf import settings
 from django.db.models import Max
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework.authentication import SessionAuthentication
 from rest_framework import generics, status
-from rest_framework.permissions import AllowAny, IsAdminUser
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -20,11 +19,10 @@ from .services import (
 )
 
 
-class IsAdminOrLocalDebug(IsAdminUser):
-    def has_permission(self, request, view):
-        if settings.DEBUG and request.META.get("REMOTE_ADDR") in {"127.0.0.1", "::1"}:
-            return True
-        return super().has_permission(request, view)
+class CsrfProtectedSessionAuthentication(SessionAuthentication):
+    def authenticate(self, request):
+        self.enforce_csrf(request)
+        return super().authenticate(request)
 
 
 class AlertListCreateView(generics.ListCreateAPIView):
@@ -151,8 +149,8 @@ class TelegramCsrfView(APIView):
 
 
 class TelegramTestView(APIView):
-    authentication_classes = [SessionAuthentication]
-    permission_classes = [IsAdminOrLocalDebug]
+    authentication_classes = [CsrfProtectedSessionAuthentication]
+    permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = TelegramTestSerializer(data=request.data)
@@ -172,8 +170,8 @@ class TelegramTestView(APIView):
 
 
 class TelegramFindChatView(APIView):
-    authentication_classes = [SessionAuthentication]
-    permission_classes = [IsAdminOrLocalDebug]
+    authentication_classes = [CsrfProtectedSessionAuthentication]
+    permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = TelegramFindChatSerializer(data=request.data)

@@ -119,50 +119,54 @@ class TelegramTestApiTests(TestCase):
         self.client = APIClient(enforce_csrf_checks=True)
 
     @override_settings(DEBUG=False)
-    def test_test_message_requires_staff_session_outside_debug(self):
-        response = self.client.post("/api/telegram/test/", {}, format="json")
-
-        self.assertEqual(response.status_code, 403)
-
-    @override_settings(DEBUG=True)
     @patch("alerts.views.send_telegram_test")
-    def test_local_debug_can_send_test_message_without_staff_session(self, send_test):
+    def test_any_user_can_send_test_message_with_csrf(self, send_test):
+        csrf = self.client.get("/api/telegram/csrf/")
         response = self.client.post(
             "/api/telegram/test/", {"bot_token": "adhoc-token", "chat_id": "987654321"}, format="json",
+            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"],
         )
 
+        self.assertEqual(csrf.status_code, 200)
         self.assertEqual(response.status_code, 200)
         send_test.assert_called_once_with(self.notification, token="adhoc-token", chat_id="987654321")
+        self.notification.refresh_from_db()
+        self.assertEqual(self.notification.telegram_bot_token, "server-only-token")
+        self.assertEqual(self.notification.telegram_chat_id, "512345678")
 
-    @override_settings(DEBUG=True)
+    @override_settings(DEBUG=False)
     @patch("alerts.services.requests.post")
     def test_test_message_reports_telegram_rejection(self, post):
         post.return_value.json.return_value = {"ok": False, "description": "Unauthorized"}
+        csrf = self.client.get("/api/telegram/csrf/")
 
         response = self.client.post(
             "/api/telegram/test/", {"bot_token": "invalid-token", "chat_id": "987654321"}, format="json",
+            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"],
         )
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data, {"detail": "Unauthorized"})
 
-    @override_settings(DEBUG=True)
-    def test_non_loopback_debug_request_still_requires_staff(self):
+    def test_test_message_requires_csrf_without_a_session(self):
         response = self.client.post(
-            "/api/telegram/test/", {}, format="json", REMOTE_ADDR="203.0.113.10",
+            "/api/telegram/test/", {"bot_token": "adhoc-token", "chat_id": "987654321"}, format="json",
         )
 
         self.assertEqual(response.status_code, 403)
 
-    @override_settings(DEBUG=True)
+    @override_settings(DEBUG=False)
     @patch("alerts.views.find_telegram_chat")
-    def test_local_debug_can_find_chat_without_staff_session(self, find_chat):
+    def test_any_user_can_find_chat_without_admin_session(self, find_chat):
         find_chat.return_value = {"id": 987654321, "first_name": "Ad hoc"}
+        csrf = self.client.get("/api/telegram/csrf/")
 
         response = self.client.post(
             "/api/telegram/find-chat/", {"bot_token": "adhoc-token"}, format="json",
+            HTTP_X_CSRFTOKEN=csrf.data["csrf_token"],
         )
 
+        self.assertEqual(csrf.status_code, 200)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {"chat_id": "987654321", "chat_name": "Ad hoc"})
         find_chat.assert_called_once_with(self.notification, token="adhoc-token")
