@@ -311,7 +311,6 @@ export default function Home() {
 
           <section className="panel delivery-panel">
             <div className="panel-head"><div><p className="eyebrow">DELIVERY</p><h2>Telegram</h2></div><span className="count">{telegram.enabled ? "ON" : "OFF"}</span></div>
-            <p className="telegram-status">{telegram.enabled ? `Backend delivery is enabled${telegram.chat_hint ? ` for ${telegram.chat_hint}` : ""}.` : telegram.configured ? "Bot configured, but backend delivery is disabled." : "Telegram is not configured on the backend."}</p>
             <label className="telegram-field">Ad-hoc bot token<input type="password" autoComplete="off" value={telegramTestToken} onChange={(event) => setTelegramTestToken(event.target.value)} placeholder="Enter for this session only" /></label>
             <label className="telegram-field">Ad-hoc chat ID<input autoComplete="off" value={telegramTestChat} onChange={(event) => setTelegramTestChat(event.target.value)} placeholder="Find it with your bot token" /></label>
             <div className="telegram-actions"><button className="refresh" disabled={!telegramTestToken.trim() || findingTelegram} onClick={() => void findTelegramChatFromBackend()}>{findingTelegram ? "Finding…" : "Find my chat ID"}</button><button className="refresh" disabled={!telegramTestToken.trim() || !telegramTestChat.trim() || testingTelegram} onClick={() => void testTelegramFromBackend()}>{testingTelegram ? "Sending…" : "Test Telegram"}</button></div>
