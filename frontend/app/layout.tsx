@@ -5,7 +5,7 @@ import "./responsive.css";
 import "./tailwind.css";
 
 export const metadata: Metadata = {
-  title: "TradeChartAlert — Market alerts",
+  title: "TCAs - Trade Chart Alerts",
   description: "Create and monitor persistent market alerts.",
 };
 

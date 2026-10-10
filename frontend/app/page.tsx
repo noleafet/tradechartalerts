@@ -188,7 +188,7 @@ export default function Home() {
   return (
     <main className="shell min-h-screen w-full px-4 sm:px-6 lg:px-10 2xl:px-14">
       <header className="topbar">
-        <a className="brand" href="#top"><span>Trade Chart Alerts</span></a>
+        <a className="brand" href="#top"><span>TCAs -Trade Chart Alerts</span></a>
         <button
           type="button"
           className={`theme-switch ${theme === "dark" ? "is-dark" : ""}`}
@@ -244,7 +244,7 @@ export default function Home() {
           </section>
 
       </div>
-      <footer><span>TRADECHARTALERT / MARKET ALERTS</span><span>Prices via {exchange === "binance" ? "Binance" : "Bybit"} public market data · UTC timestamps</span></footer>
+      <footer><span>TCAs @ 2026</span><span>Prices via {exchange === "binance" ? "Binance" : "Bybit"} public market data · UTC timestamps</span></footer>
       <div className="toast-stack" aria-live="polite">{toasts.map((item) => <div className="alert-toast" key={item.id}><button aria-label="Dismiss notification" onClick={() => setToasts((current) => current.filter((entry) => entry.id !== item.id))}>×</button><b>{item.title}</b><span>{item.message}</span></div>)}</div>
     </main>
   );

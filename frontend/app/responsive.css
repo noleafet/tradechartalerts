@@ -148,9 +148,8 @@
 /* Below-chart alert dashboard */
 .dashboard-grid{
   grid-template-areas:
-    "create alerts"
-    "activity activity";
-  grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);
+    "create alerts activity";
+  grid-template-columns:repeat(3,minmax(0,1fr));
   gap:18px;
   align-items:stretch;
   margin:10px 0 34px;
