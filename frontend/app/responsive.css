@@ -125,7 +125,7 @@
 .api-link{margin-left:0}
 .hero{padding:16px 0 13px;align-items:center;gap:10px}
 .hero .eyebrow{margin-bottom:5px}
-.hero h2{font-size:18px;line-height:1.08;letter-spacing:0}
+.hero h2{font-size:18px;line-height:1.08;letter-spacing:0; margin:0 0 10px}
 .hero h2 br{display:none}
 .hero .lede{margin-top:6px;font-size:12px;line-height:1.4}
 .hero-stats{min-width:220px;gap:5px 18px}
