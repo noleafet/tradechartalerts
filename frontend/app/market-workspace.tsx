@@ -3,11 +3,14 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   ColorType, CrosshairMode, createChart,
-  type CandlestickData, type UTCTimestamp,
+  type CandlestickData, type IChartApi, type Logical, type UTCTimestamp,
 } from "lightweight-charts";
 
 const API = "/api/proxy";
 const intervals = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"] as const;
+const intervalSeconds: Record<(typeof intervals)[number], number> = {
+  "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800,
+};
 const lineTools = ["trend", "ray", "hline", "hray"] as const;
 type Tool = (typeof lineTools)[number];
 type Bar = { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number };
@@ -81,6 +84,15 @@ function lineValue(line: Drawing, time: number) {
   if (line.type === "trend" && !line.extend && time > (line.t2 ?? line.t1)) return null;
   if (line.t2 === undefined || line.p2 === undefined || line.t2 === line.t1) return null;
   return line.p1 + (line.p2 - line.p1) * (time - line.t1) / (line.t2 - line.t1);
+}
+function drawingCoordinate(chart: IChartApi, time: number, data: Bar[], timeframe: Preferences["timeframe"]) {
+  const scale = chart.timeScale();
+  const coordinate = scale.timeToCoordinate(time as UTCTimestamp);
+  if (coordinate !== null) return coordinate;
+  const last = data.at(-1);
+  if (!last || time <= Number(last.time)) return null;
+  const logical = data.length - 1 + (time - Number(last.time)) / intervalSeconds[timeframe];
+  return scale.logicalToCoordinate(logical as Logical);
 }
 
 export default function MarketWorkspace({ symbol, exchange = "binance", onExchangeChange, theme = "light", onSymbolChange, onPriceSelect, alerts, onCreateLineAlert, onUpdateLineAlert, onDeleteLineAlert }: Props) {
@@ -212,20 +224,26 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
     });
     observer.observe(chartElement); observer.observe(macdElement);
     chart.subscribeClick((param) => {
-      if (!param.point || !param.time) return;
+      if (!param.point) return;
       const price = candles.coordinateToPrice(param.point.y);
       const activeTool = modeRef.current;
-      if (price !== null && !activeTool) onPriceSelect(String(Number(price.toPrecision(10))));
+      if (price !== null && !activeTool && param.time) onPriceSelect(String(Number(price.toPrecision(10))));
       if (!activeTool) return;
       const logical = chart.timeScale().coordinateToLogical(param.point.x);
       if (logical === null) return;
-      const index = Math.max(0, Math.min(barsRef.current.length - 1, Math.round(logical)));
-      const bar = barsRef.current[index];
-      if (!bar || price === null) return;
-      const candle = preferencesRef.current.candleType === "ha" ? heikinAshi(barsRef.current)[index] : bar;
+      const data = barsRef.current;
+      if (!data.length || price === null) return;
+      const logicalIndex = Math.max(0, Math.round(logical));
+      const index = Math.min(data.length - 1, logicalIndex);
+      const bar = data[index];
+      const candle = preferencesRef.current.candleType === "ha" ? heikinAshi(data)[index] : bar;
       const snappedPrice = preferencesRef.current.magnet || modifiers.current.ctrl ? [candle.open, candle.high, candle.low, candle.close].sort((a, b) => Math.abs(a - price) - Math.abs(b - price))[0] : price;
       const finalPrice = modifiers.current.shift && pendingRef.current ? pendingRef.current.price : snappedPrice;
-      const point = { time: Number(bar.time), price: finalPrice };
+      const last = data.at(-1)!;
+      const time = logicalIndex < data.length
+        ? Number(data[logicalIndex].time)
+        : Number(last.time) + (logicalIndex - data.length + 1) * intervalSeconds[timeframe];
+      const point = { time, price: finalPrice };
       if (activeTool === "hline" || activeTool === "hray") {
         const line: Drawing = { id: idFor(), symbol, type: activeTool, t1: point.time, p1: point.price, width: 2, opacity: 1 };
         setDrawings((current) => [...current, line]); setSelected(line.id); setTool(null); modeRef.current = null; pendingRef.current = null; setPendingPoint(false);
@@ -329,12 +347,11 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
       canvasElement.width = Math.round(bounds.width * ratio); canvasElement.height = Math.round(bounds.height * ratio);
       const context = canvasElement.getContext("2d"); if (!context) return;
       context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, bounds.width, bounds.height);
-      const scale = chart.timeScale();
       for (const line of drawings) {
         if (line.symbol !== symbol || line.hidden || !preferences.drawingsVisible) continue;
-        const x1 = scale.timeToCoordinate(line.t1 as UTCTimestamp); const y1 = current.candles.priceToCoordinate(line.p1);
+        const x1 = drawingCoordinate(chart, line.t1, barsRef.current, timeframe); const y1 = current.candles.priceToCoordinate(line.p1);
         if (x1 === null || y1 === null) continue;
-        const endX = line.t2 === undefined ? bounds.width : scale.timeToCoordinate(line.t2 as UTCTimestamp);
+        const endX = line.t2 === undefined ? bounds.width : drawingCoordinate(chart, line.t2, barsRef.current, timeframe);
         const endY = line.p2 === undefined ? y1 : current.candles.priceToCoordinate(line.p2);
         if (endX === null || endY === null) continue;
         let x2 = Number(endX); let y2 = Number(endY);
@@ -347,14 +364,14 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
         const attached = alerts.find((alert) => alert.line_type === line.type && alert.line_t1 && Math.abs(Number(alert.line_price1) - line.p1) < 1e-10 && Math.abs(new Date(alert.line_t1).getTime() / 1000 - line.t1) < 2);
         context.globalAlpha = line.opacity; context.strokeStyle = attached?.active && preferences.alertsVisible ? colors.amber : colors.blue; context.lineWidth = line.width;
         context.beginPath(); context.moveTo(drawX1, y1); context.lineTo(x2, y2); context.stroke(); context.globalAlpha = 1;
-        if (selected === line.id) for (const [x, y] of [[x1, y1], [line.t2 === undefined ? x1 : scale.timeToCoordinate(line.t2 as UTCTimestamp) ?? x1, line.p2 === undefined ? y1 : current.candles.priceToCoordinate(line.p2) ?? y1]]) {
+        if (selected === line.id) for (const [x, y] of [[x1, y1], [line.t2 === undefined ? x1 : drawingCoordinate(chart, line.t2, barsRef.current, timeframe) ?? x1, line.p2 === undefined ? y1 : current.candles.priceToCoordinate(line.p2) ?? y1]]) {
           context.fillStyle = colors.bg; context.strokeStyle = colors.blue; context.beginPath(); context.arc(x, y, 4, 0, Math.PI * 2); context.fill(); context.stroke();
         }
       }
       animation = requestAnimationFrame(paint);
     };
     paint(); return () => cancelAnimationFrame(animation);
-  }, [bars, drawings, symbol, selected, theme, preferences.drawingsVisible, preferences.alertsVisible, alerts]);
+  }, [bars, drawings, symbol, selected, theme, timeframe, preferences.drawingsVisible, preferences.alertsVisible, alerts]);
 
   useEffect(() => {
     let valid = true;
@@ -418,7 +435,7 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
     const logical = chart.timeScale().coordinateToLogical(x); const price = candleSeries.coordinateToPrice(y);
     if (logical === null || price === null) return null;
     const index = Math.round(logical); const data = barsRef.current;
-    const step = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800 }[timeframe];
+    const step = intervalSeconds[timeframe];
     const time = index < 0 ? Number(data[0].time) + index * step : index >= data.length ? Number(data.at(-1)!.time) + (index - data.length + 1) * step : Number(data[index].time);
     let value = Number(price);
     if (preferencesRef.current.magnet || modifiers.current.ctrl) {
@@ -433,8 +450,8 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
     const chart = chartApi.current; const candleSeries = series.current?.candles; const element = host.current;
     if (!line || !chart || !candleSeries || !element) { setSelected(null); return; }
     const bounds = element.getBoundingClientRect(); const x = event.clientX - bounds.left; const y = event.clientY - bounds.top;
-    const x1 = chart.timeScale().timeToCoordinate(line.t1 as UTCTimestamp); const y1 = candleSeries.priceToCoordinate(line.p1);
-    const x2 = line.t2 === undefined ? bounds.width : chart.timeScale().timeToCoordinate(line.t2 as UTCTimestamp);
+    const x1 = drawingCoordinate(chart, line.t1, barsRef.current, timeframe); const y1 = candleSeries.priceToCoordinate(line.p1);
+    const x2 = line.t2 === undefined ? bounds.width : drawingCoordinate(chart, line.t2, barsRef.current, timeframe);
     const y2 = line.p2 === undefined ? y1 : candleSeries.priceToCoordinate(line.p2);
     if (x1 === null || y1 === null || x2 === null || y2 === null) { setSelected(null); return; }
     const distance = (ax: number, ay: number, bx: number, by: number) => {
