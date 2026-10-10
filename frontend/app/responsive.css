@@ -71,7 +71,7 @@
 .remove-watch{color:var(--muted);text-align:center;font:16px var(--sans)}
 .remove-watch:hover,.drawing-item-head button:last-child:hover{color:var(--red)}
 .watch-add{display:flex;gap:7px;margin-top:11px}
-.watch-add input,.telegram-field input{min-width:0;flex:1;border:1px solid var(--line);border-radius:4px;background:#fffefa;color:var(--ink);padding:8px;font:10px var(--mono)}
+.watch-add input{min-width:0;flex:1;border:1px solid var(--line);border-radius:4px;background:#fffefa;color:var(--ink);padding:8px;font:10px var(--mono)}
 .watch-add button{border:1px solid var(--green);border-radius:4px;background:var(--green);color:#fff;padding:0 12px;font-size:11px}
 .count{color:var(--muted);font-size:9px}
 .drawing-list{display:grid;gap:7px}
@@ -87,24 +87,12 @@
 .drawing-options label{display:flex;align-items:center;gap:5px}
 .drawing-options label:first-child{flex:1}
 .drawing-options input[type=range]{width:65px;accent-color:var(--green)}
-.drawing-options input[type=checkbox],.telegram-toggle input{accent-color:var(--green)}
+.drawing-options input[type=checkbox]{accent-color:var(--green)}
 .drawing-options .check-label{white-space:nowrap}
 .workspace-empty{line-height:1.6}
 .monitor-sections{display:grid;min-width:0;gap:16px;align-content:start}
-.panel-actions,.telegram-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.panel-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .event-head{display:flex;align-items:center;justify-content:space-between;margin-top:22px}
-.telegram-block{border-top:1px solid var(--line);margin-top:20px;padding-top:5px}
-.telegram-help{margin:12px 0;color:var(--muted);font-size:11px}
-.telegram-help summary{color:var(--ink);cursor:pointer}
-.telegram-help ol{padding-left:18px;line-height:1.7}
-.telegram-help code{font:10px var(--mono)}
-.telegram-field{display:grid;gap:5px;margin:10px 0;color:var(--muted);font-size:10px}
-.telegram-toggle{display:flex;align-items:center;gap:7px;margin:12px 0;font-size:11px;color:var(--ink)}
-.telegram-actions{margin:10px 0}
-.server-export{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:10px}
-.server-export p,.telegram-status{margin:0;color:var(--muted);font-size:10px;line-height:1.5}
-.telegram-status{min-height:15px;margin-top:8px}
-.telegram-admin-link{display:inline-block;margin:8px 0;text-decoration:none}
 .toast-stack{position:fixed;right:18px;bottom:18px;z-index:20;display:grid;gap:8px;width:min(340px,calc(100vw - 36px));pointer-events:none}
 .alert-toast{position:relative;display:grid;gap:4px;padding:12px 34px 12px 14px;border-left:3px solid var(--amber);border-radius:4px;background:var(--ink);color:#fff;box-shadow:0 7px 24px #18231e30;font-size:11px;pointer-events:auto;animation:toast-in .18s ease-out}
 .alert-toast b{font-size:12px}
@@ -119,7 +107,7 @@
 :root[data-theme="dark"] .panel{border-color:var(--line);background:var(--paper)}
 :root[data-theme="dark"] .watch-row{border-color:#283044}
 :root[data-theme="dark"] .watch-row.current{background:#222a3d}
-:root[data-theme="dark"] .watch-add input,:root[data-theme="dark"] .telegram-field input,:root[data-theme="dark"] .alert-form input,:root[data-theme="dark"] .alert-form select,:root[data-theme="dark"] .chart-symbol input,:root[data-theme="dark"] .chart-tools>select,:root[data-theme="dark"] .drawing-item-head button,:root[data-theme="dark"] .drawing-options select{border-color:var(--line);background:#121722;color:var(--ink)}
+:root[data-theme="dark"] .watch-add input,:root[data-theme="dark"] .alert-form input,:root[data-theme="dark"] .alert-form select,:root[data-theme="dark"] .chart-symbol input,:root[data-theme="dark"] .chart-tools>select,:root[data-theme="dark"] .drawing-item-head button,:root[data-theme="dark"] .drawing-options select{border-color:var(--line);background:#121722;color:var(--ink)}
 :root[data-theme="dark"] .mode-switch button.chosen,:root[data-theme="dark"] .indicator-chip.active,:root[data-theme="dark"] .drawing-toolbar button.active{border-color:#283044;background:#222a3d;color:#3ecf9b}
 :root[data-theme="dark"] .drawing-toolbar button{border-color:var(--line);background:var(--paper)}
 :root[data-theme="dark"] .watchlist{scrollbar-color:#7f8aa3 #1a2030}
@@ -161,7 +149,7 @@
 .dashboard-grid{
   grid-template-areas:
     "create alerts"
-    "activity delivery";
+    "activity activity";
   grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);
   gap:18px;
   align-items:stretch;
@@ -176,7 +164,6 @@
 .create-panel{grid-area:create}
 .list-panel{grid-area:alerts}
 .activity-panel{grid-area:activity}
-.delivery-panel{grid-area:delivery}
 .dashboard-grid .panel-head{gap:12px}
 .dashboard-grid .panel-head h2{letter-spacing:-.4px}
 .alert-list,.event-list{
@@ -190,11 +177,9 @@
 .event-list{max-height:min(300px,40vh)}
 .event-row>div,.alert-details{min-width:0}
 .dashboard-grid .panel-actions{justify-content:flex-end}
-.delivery-panel .telegram-field{margin:13px 0}
-.delivery-panel .telegram-actions{margin:16px 0 0}
 @media(max-width:850px){
   .dashboard-grid{
-    grid-template-areas:"create alerts" "activity delivery";
+    grid-template-areas:"create alerts" "activity activity";
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);
     gap:13px;
   }
@@ -202,7 +187,7 @@
 }
 @media(max-width:720px){
   .dashboard-grid{
-    grid-template-areas:"create" "alerts" "activity" "delivery";
+    grid-template-areas:"create" "alerts" "activity";
     grid-template-columns:minmax(0,1fr);
     gap:12px;
     margin-top:6px;

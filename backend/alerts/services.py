@@ -115,6 +115,15 @@ def _macd_signal(symbol, timeframe, exchange):
     index = len(closed) - 1
     if any(value is None for value in (macd_line[index - 1], signal[index - 1], macd_line[index], signal[index])):
         return None
+    true_ranges = []
+    for candle_index in range(len(closed)):
+        candle = closed[candle_index]
+        high, low = float(candle[2]), float(candle[3])
+        previous_close = float(closed[candle_index - 1][4]) if candle_index else closes[candle_index]
+        true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+    atr = sum(true_ranges[:14]) / 14
+    for true_range in true_ranges[14:]:
+        atr = (atr * 13 + true_range) / 14
     return {
         "bar_time": datetime.fromtimestamp(int(closed[index][0]) / 1000, tz=dt_timezone.utc),
         "previous_diff": macd_line[index - 1] - signal[index - 1],
@@ -122,6 +131,7 @@ def _macd_signal(symbol, timeframe, exchange):
         "close": closes[index],
         "macd": macd_line[index],
         "signal": signal[index],
+        "atr": atr,
     }
 
 
@@ -154,6 +164,25 @@ def _crossed(condition, previous, current):
     if condition == Alert.Condition.CROSS_DOWN:
         return down
     return up or down
+
+
+def _macd_approach_thresholds(previous, current, previous_gap_percent, current_gap_percent, condition, previous_threshold):
+    """Return newly reached proximity bands and the current approach state."""
+    if previous is None or current == 0 or previous_gap_percent is None or current_gap_percent is None:
+        return [], None
+    if previous * current <= 0 or current_gap_percent >= previous_gap_percent:
+        return [], None
+    if (current < 0 and condition == Alert.Condition.CROSS_DOWN) or (
+        current > 0 and condition == Alert.Condition.CROSS_UP
+    ):
+        return [], None
+
+    reached = [
+        threshold for threshold in (10, 5)
+        if current_gap_percent <= threshold and (previous_threshold is None or threshold > previous_threshold)
+    ]
+    current_threshold = min(reached) if reached else previous_threshold
+    return reached, current_threshold
 
 
 def _may_fire(alert, now):
@@ -214,10 +243,7 @@ def _notify(event, configuration):
     if not configuration.notification_enabled:
         return
 
-    # Replace Notification.load() with a method that fetches all table rows/records
-    notifications = Notification.load_all()  # Update this method name to match your ORM or loader
-
-    for notification in notifications:
+    for notification in Notification.objects.order_by("id").iterator():
         token = notification.telegram_bot_token
         chat_id = notification.telegram_chat_id
 
@@ -295,10 +321,43 @@ def check_alerts(*, stdout=None):
                 if alert.last_bar_open_time is None:
                     # Arm at the latest closed candle; never report an old cross on first startup.
                     alert.last_bar_open_time = bar_time
+                    alert.last_macd_diff = macd["current_diff"]
+                    atr = macd.get("atr")
+                    alert.last_macd_gap_percent = abs(macd["current_diff"]) / atr * 100 if atr and atr > 0 else None
                 elif bar_time > alert.last_bar_open_time:
-                    hit = _crossed(alert.condition, macd["previous_diff"], macd["current_diff"])
+                    previous_diff = alert.last_macd_diff
+                    if previous_diff is None:
+                        previous_diff = macd["previous_diff"]
+                    current_diff = macd["current_diff"]
+                    atr = macd.get("atr")
+                    current_gap_percent = abs(current_diff) / atr * 100 if atr and atr > 0 else None
+                    previous_gap_percent = alert.last_macd_gap_percent
+                    if previous_gap_percent is None and previous_diff is not None and atr and atr > 0:
+                        previous_gap_percent = abs(previous_diff) / atr * 100
+                    hit = _crossed(alert.condition, previous_diff, current_diff)
                     alert.last_bar_open_time = bar_time
                     alert.last_observed_value = macd["close"]
+                    thresholds, warning_state = _macd_approach_thresholds(
+                        previous_diff, current_diff, previous_gap_percent, current_gap_percent, alert.condition,
+                        alert.last_macd_warning_threshold,
+                    )
+                    alert.last_macd_warning_threshold = warning_state
+                    alert.last_macd_diff = current_diff
+                    alert.last_macd_gap_percent = current_gap_percent
+                    for threshold in thresholds:
+                        side = "bullish" if current_diff < 0 else "bearish"
+                        fired.append(TriggerEvent.objects.create(
+                            alert=alert,
+                            symbol=alert.symbol,
+                            title=f"{alert.symbol} MACD {alert.timeframe} {threshold}% cross approach",
+                            message=(
+                                f"MACD is {current_gap_percent:.2f}% of 14-period ATR "
+                                f"from a {side} cross ({threshold}% threshold). MACD {macd['macd']:.8g}, "
+                                f"signal {macd['signal']:.8g}, close {macd['close']:g}"
+                                + (f" — {alert.note}" if alert.note else "")
+                            ),
+                            observed_value=macd["close"],
+                        ))
                     if hit and _may_fire(alert, now):
                         side = "bullish" if macd["current_diff"] > 0 else "bearish"
                         event = TriggerEvent.objects.create(
@@ -314,7 +373,8 @@ def check_alerts(*, stdout=None):
                     alert.active = False
                 fired.append(event)
             alert.save(update_fields=[
-                "active", "last_triggered_at", "last_observed_value", "last_bar_open_time", "updated_at"
+                "active", "last_triggered_at", "last_observed_value", "last_bar_open_time",
+                "last_macd_diff", "last_macd_gap_percent", "last_macd_warning_threshold", "updated_at"
             ])
 
     for event in fired:

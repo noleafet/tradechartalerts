@@ -48,28 +48,30 @@ class NotificationAdmin(admin.ModelAdmin):
 
     def get_urls(self):
         custom_urls = [
-            path("find-chat/", self.admin_site.admin_view(self.find_chat), name="alerts_notification_find_chat"),
-            path("test-message/", self.admin_site.admin_view(self.test_message), name="alerts_notification_test_message"),
+            path("<path:object_id>/find-chat/", self.admin_site.admin_view(self.find_chat), name="alerts_notification_find_chat"),
+            path("<path:object_id>/test-message/", self.admin_site.admin_view(self.test_message), name="alerts_notification_test_message"),
         ]
         return custom_urls + super().get_urls()
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         extra_context = extra_context or {}
         extra_context.update({
-            "telegram_find_chat_url": reverse("admin:alerts_notification_find_chat"),
-            "telegram_test_message_url": reverse("admin:alerts_notification_test_message"),
+            "telegram_find_chat_url": reverse("admin:alerts_notification_find_chat", args=[object_id]),
+            "telegram_test_message_url": reverse("admin:alerts_notification_test_message", args=[object_id]),
         })
         return super().change_view(request, object_id, form_url, extra_context)
 
-    def _configuration_redirect(self):
-        return redirect(reverse("admin:alerts_notification_change", args=[1]))
+    def _configuration_redirect(self, object_id):
+        return redirect(reverse("admin:alerts_notification_change", args=[object_id]))
 
-    def find_chat(self, request):
+    def find_chat(self, request, object_id):
         if request.method != "POST":
             return HttpResponseNotAllowed(["POST"])
         if not self.has_change_permission(request):
             return HttpResponseForbidden()
-        notification = Notification.load()
+        notification = self.get_object(request, object_id)
+        if notification is None:
+            return HttpResponseForbidden()
         try:
             chat = find_telegram_chat(notification)
             notification.telegram_chat_id = str(chat["id"])
@@ -78,26 +80,25 @@ class NotificationAdmin(admin.ModelAdmin):
             self.message_user(request, f"Found {name}. Save the configuration to enable backend delivery.", messages.SUCCESS)
         except (requests.RequestException, ValueError, KeyError) as exc:
             self.message_user(request, str(exc), messages.ERROR)
-        return self._configuration_redirect()
+        return self._configuration_redirect(object_id)
 
-    def test_message(self, request):
+    def test_message(self, request, object_id):
         if request.method != "POST":
             return HttpResponseNotAllowed(["POST"])
         if not self.has_change_permission(request):
             return HttpResponseForbidden()
-        notification = Notification.load()
+        notification = self.get_object(request, object_id)
+        if notification is None:
+            return HttpResponseForbidden()
         try:
             send_telegram_test(notification)
             self.message_user(request, "Test message sent. Check Telegram.", messages.SUCCESS)
         except (requests.RequestException, ValueError, KeyError) as exc:
             self.message_user(request, str(exc), messages.ERROR)
-        return self._configuration_redirect()
+        return self._configuration_redirect(object_id)
 
-    def has_add_permission(self, request):
-        return not Notification.objects.filter(pk=1).exists()
-
-    def has_delete_permission(self, request, obj=None):
-        return False
+    list_display = ("telegram_chat_id",)
+    search_fields = ("telegram_chat_id",)
 
 
 @admin.register(Exchange)

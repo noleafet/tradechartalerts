@@ -11,7 +11,6 @@ type AlertItem = {
   line_price2?: string | null; line_extend?: boolean;
 };
 type EventItem = { id: number; symbol: string; title: string; message: string; triggered_at: string };
-type TelegramStatus = { configured: boolean; enabled: boolean; chat_hint: string };
 type Exchange = "binance" | "bybit";
 type ToastItem = { id: number; title: string; message: string };
 const API = "/api/proxy";
@@ -42,12 +41,6 @@ export default function Home() {
   const [exchange, setExchange] = useState<Exchange>("binance");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [targetPrice, setTargetPrice] = useState("");
-  const [telegram, setTelegram] = useState<TelegramStatus>({ configured: false, enabled: false, chat_hint: "" });
-  const [telegramStatus, setTelegramStatus] = useState("");
-  const [testingTelegram, setTestingTelegram] = useState(false);
-  const [findingTelegram, setFindingTelegram] = useState(false);
-  const [telegramTestToken, setTelegramTestToken] = useState("");
-  const [telegramTestChat, setTelegramTestChat] = useState("");
   const [notificationAvailable, setNotificationAvailable] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [clearedThrough, setClearedThrough] = useState("");
@@ -99,12 +92,12 @@ export default function Home() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [nextAlerts, nextEvents, nextTelegram, nextExchange] = await Promise.all([
-        api<AlertItem[]>("/alerts/"), api<EventItem[]>("/events/"), api<TelegramStatus>("/telegram/status/"), api<{ exchange: Exchange }>("/exchange/"),
+      const [nextAlerts, nextEvents, nextExchange] = await Promise.all([
+        api<AlertItem[]>("/alerts/"), api<EventItem[]>("/events/"), api<{ exchange: Exchange }>("/exchange/"),
       ]);
       if (seenEvents.current) nextEvents.filter((item) => !seenEvents.current?.has(item.id)).forEach(notifyEvent);
       seenEvents.current = new Set(nextEvents.map((item) => item.id));
-      setAlerts(nextAlerts); setEvents(nextEvents); setTelegram(nextTelegram); setExchange(nextExchange.exchange); setError("");
+      setAlerts(nextAlerts); setEvents(nextEvents); setExchange(nextExchange.exchange); setError("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not reach the API.");
     } finally { setRefreshing(false); }
@@ -183,24 +176,6 @@ export default function Home() {
     const matching = alerts.find((item) => item.symbol === drawing.symbol && item.line_type === drawing.type && item.line_t1 && Math.abs(new Date(item.line_t1).getTime() / 1000 - drawing.t1) < 2 && Number(item.line_price1) === drawing.p1);
     if (matching) await deleteAlert(matching.id);
   }
-  async function copyServerAlerts() {
-    const exported = alerts.filter((item) => item.active).map((item) => {
-      const alert: Record<string, unknown> = { id: item.id, symbol: item.symbol, cond: item.condition, note: item.note, freq: item.frequency };
-      if (item.kind === "macd") { alert.kind = "macd"; alert.tf = item.timeframe; }
-      else if (item.line_type) alert.line = { type: item.line_type, t1: new Date(item.line_t1!).getTime() / 1000, p1: Number(item.line_price1), t2: item.line_t2 ? new Date(item.line_t2).getTime() / 1000 : null, p2: item.line_price2 ? Number(item.line_price2) : null, extend: !!item.line_extend };
-      else alert.price = Number(item.price);
-      return alert;
-    });
-    if (!exported.length) { setTelegramStatus("No armed alerts to copy."); return; }
-    const payload = JSON.stringify({ tradechartalert: 1, chartdesk: 1, alerts: exported });
-    const text = `/import ${payload}`;
-    try {
-      if (text.length <= 4000) { await navigator.clipboard.writeText(text); setTelegramStatus(`Copied ${exported.length} alert${exported.length === 1 ? "" : "s"}. Paste into your 24/7 bot chat.`); return; }
-    } catch { /* Fall back to downloading a JSON file. */ }
-    const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([payload], { type: "application/json" })); link.download = "tradechartalert-alerts.json"; link.click(); URL.revokeObjectURL(link.href);
-    setTelegramStatus(`Downloaded ${exported.length} alerts as JSON.`);
-  }
-
   function clearLog() {
     const newest = events[0]?.triggered_at ?? new Date().toISOString();
     setClearedThrough(newest);
@@ -209,47 +184,6 @@ export default function Home() {
   function requestNotifications() {
     if ("Notification" in window) void Notification.requestPermission();
   }
-  async function getTelegramCsrfToken() {
-    const response = await fetch(`${API}/telegram/csrf/`, { credentials: "include", cache: "no-store" });
-    if (!response.ok) throw new Error("Could not prepare a secure backend request.");
-    return (await response.json() as { csrf_token: string }).csrf_token;
-  }
-  async function findTelegramChatFromBackend() {
-    if (!telegramTestToken.trim()) { setTelegramStatus("Enter a bot token first."); return; }
-    setFindingTelegram(true); setTelegramStatus("Finding chat through Django…");
-    try {
-      const csrfToken = await getTelegramCsrfToken();
-      const response = await fetch(`${API}/telegram/find-chat/`, {
-        method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
-        body: JSON.stringify({ bot_token: telegramTestToken.trim() }), cache: "no-store",
-      });
-      const payload = await response.json().catch(() => ({})) as { detail?: string; chat_id?: string; chat_name?: string };
-      if (response.status === 403) throw new Error(payload.detail ?? "Request blocked. Refresh the page and try again.");
-      if (!response.ok) throw new Error(payload.detail ?? `Backend request failed (${response.status}).`);
-      setTelegramTestChat(payload.chat_id ?? "");
-      setTelegramStatus(`Found ${payload.chat_name ?? "Telegram chat"}. The credentials are only used for this test session.`);
-    } catch (reason) {
-      setTelegramStatus(reason instanceof Error ? reason.message : "Could not find the Telegram chat.");
-    } finally { setFindingTelegram(false); }
-  }
-  async function testTelegramFromBackend() {
-    if (!telegramTestToken.trim() || !telegramTestChat.trim()) { setTelegramStatus("Enter a bot token and chat ID first."); return; }
-    setTestingTelegram(true); setTelegramStatus("Sending test message through Django…");
-    try {
-      const csrfToken = await getTelegramCsrfToken();
-      const response = await fetch(`${API}/telegram/test/`, {
-        method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
-        body: JSON.stringify({ bot_token: telegramTestToken.trim(), chat_id: telegramTestChat.trim() }), cache: "no-store",
-      });
-      const payload = await response.json().catch(() => ({})) as { detail?: string };
-      if (response.status === 403) throw new Error(payload.detail ?? "Request blocked. Refresh the page and try again.");
-      if (!response.ok) throw new Error(payload.detail ?? `Backend request failed (${response.status}).`);
-      setTelegramStatus(payload.detail ?? "Test message sent. Check Telegram.");
-    } catch (reason) {
-      setTelegramStatus(reason instanceof Error ? reason.message : "Could not send the backend test message.");
-    } finally { setTestingTelegram(false); }
-  }
-
   const activeCount = alerts.filter((item) => item.active).length;
   return (
     <main className="shell min-h-screen w-full px-4 sm:px-6 lg:px-10 2xl:px-14">
@@ -309,13 +243,6 @@ export default function Home() {
             {events.filter((event) => !clearedThrough || event.triggered_at > clearedThrough).length ? <div className="event-list">{events.filter((event) => !clearedThrough || event.triggered_at > clearedThrough).slice(0, 20).map((event) => <article className="event-row" key={event.id}><span className="event-spark">✳</span><div><b>{event.title}</b><p>{event.message}</p></div><time>{new Date(event.triggered_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></article>)}</div> : <p className="no-events">Alerts that trigger will appear here.</p>}
           </section>
 
-          <section className="panel delivery-panel">
-            <div className="panel-head"><div><p className="eyebrow">DELIVERY</p><h2>Telegram</h2></div><span className="count">{telegram.enabled ? "ON" : "OFF"}</span></div>
-            <label className="telegram-field">Ad-hoc bot token<input type="password" autoComplete="off" value={telegramTestToken} onChange={(event) => setTelegramTestToken(event.target.value)} placeholder="Enter for this session only" /></label>
-            <label className="telegram-field">Ad-hoc chat ID<input autoComplete="off" value={telegramTestChat} onChange={(event) => setTelegramTestChat(event.target.value)} placeholder="Find it with your bot token" /></label>
-            <div className="telegram-actions"><button className="refresh" disabled={!telegramTestToken.trim() || findingTelegram} onClick={() => void findTelegramChatFromBackend()}>{findingTelegram ? "Finding…" : "Find my chat ID"}</button><button className="refresh" disabled={!telegramTestToken.trim() || !telegramTestChat.trim() || testingTelegram} onClick={() => void testTelegramFromBackend()}>{testingTelegram ? "Sending…" : "Test Telegram"}</button></div>
-            <p className="telegram-status">{telegramStatus}</p>
-          </section>
       </div>
       <footer><span>TRADECHARTALERT / MARKET ALERTS</span><span>Prices via {exchange === "binance" ? "Binance" : "Bybit"} public market data · UTC timestamps</span></footer>
       <div className="toast-stack" aria-live="polite">{toasts.map((item) => <div className="alert-toast" key={item.id}><button aria-label="Dismiss notification" onClick={() => setToasts((current) => current.filter((entry) => entry.id !== item.id))}>×</button><b>{item.title}</b><span>{item.message}</span></div>)}</div>

@@ -34,17 +34,8 @@ class Notification(models.Model):
     telegram_bot_token = models.CharField(max_length=255, blank=True, default="")
     telegram_chat_id = models.CharField(max_length=128, blank=True, default="")
 
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
     def __str__(self):
-        return "Telegram notification configuration"
-
-    @classmethod
-    def load(cls):
-        notification, _created = cls.objects.get_or_create(pk=1)
-        return notification
+        return self.telegram_chat_id or "Telegram notification"
 
 
 class Exchange(models.Model):
@@ -121,6 +112,9 @@ class Alert(models.Model):
     last_triggered_at = models.DateTimeField(null=True, blank=True)
     last_observed_value = models.FloatField(null=True, blank=True)
     last_bar_open_time = models.DateTimeField(null=True, blank=True)
+    last_macd_diff = models.FloatField(null=True, blank=True)
+    last_macd_gap_percent = models.FloatField(null=True, blank=True)
+    last_macd_warning_threshold = models.PositiveSmallIntegerField(null=True, blank=True)
     cooldown_seconds = models.PositiveIntegerField(default=60)
 
     # Optional line-based price alert, preserving the drawing alert semantics of TradeChartAlert.

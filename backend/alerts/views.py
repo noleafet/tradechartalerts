@@ -130,12 +130,13 @@ class HealthView(APIView):
 class TelegramStatusView(APIView):
     def get(self, request):
         configuration = AppConfiguration.load()
-        notification = Notification.load()
-        configured = bool(notification.telegram_bot_token and notification.telegram_chat_id)
+        notifications = Notification.objects.order_by("id").exclude(telegram_bot_token="").exclude(telegram_chat_id="")
+        chat_hints = [f"...{chat_id[-4:]}" for chat_id in notifications.values_list("telegram_chat_id", flat=True)]
+        configured = bool(chat_hints)
         return Response({
             "configured": configured,
             "enabled": configured and configuration.notification_enabled,
-            "chat_hint": f"...{notification.telegram_chat_id[-4:]}" if notification.telegram_chat_id else "",
+            "chat_hint": ", ".join(chat_hints),
         })
 
 
@@ -158,7 +159,7 @@ class TelegramTestView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
             send_telegram_test(
-                Notification.load(),
+                Notification(),
                 token=serializer.validated_data["bot_token"],
                 chat_id=serializer.validated_data["chat_id"],
             )
@@ -178,7 +179,7 @@ class TelegramFindChatView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
-            chat = find_telegram_chat(Notification.load(), token=serializer.validated_data["bot_token"])
+            chat = find_telegram_chat(Notification(), token=serializer.validated_data["bot_token"])
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except requests.RequestException:

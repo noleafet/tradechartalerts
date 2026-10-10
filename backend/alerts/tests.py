@@ -1,11 +1,13 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import Alert, AppConfiguration, Exchange, Notification, TriggerEvent, WatchlistSymbol
-from .services import _notify, get_market_candles, get_market_quote
+from .services import _macd_approach_thresholds, _notify, check_alerts, get_market_candles, get_market_quote
 
 
 class AlertApiTests(TestCase):
@@ -20,6 +22,7 @@ class AlertApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["symbol"], "BTCUSDT")
         self.assertEqual(Alert.objects.count(), 1)
+
 
     def test_macd_requires_supported_timeframe_and_cross_condition(self):
         response = self.client.post("/api/alerts/", {
@@ -37,7 +40,7 @@ class AlertApiTests(TestCase):
 
     def test_telegram_status_never_returns_credentials(self):
         configuration = AppConfiguration.load()
-        notification = Notification.load()
+        notification = Notification.objects.create()
         notification.telegram_bot_token = "secret-token"
         notification.telegram_chat_id = "123456789"
         configuration.notification_enabled = True
@@ -53,7 +56,7 @@ class AlertApiTests(TestCase):
     @patch("alerts.services.telegram_request")
     def test_alert_delivery_requires_backend_telegram_enablement(self, send_message):
         configuration = AppConfiguration.load()
-        notification = Notification.load()
+        notification = Notification.objects.create()
         notification.telegram_bot_token = "secret-token"
         notification.telegram_chat_id = "123456789"
         event = TriggerEvent(symbol="BTCUSDT", title="BTC alert", message="Target crossed")
@@ -66,10 +69,105 @@ class AlertApiTests(TestCase):
         _notify(event, configuration)
         send_message.assert_called_once()
 
+    @patch("alerts.services.telegram_request")
+    def test_alert_delivery_sends_to_every_configured_destination(self, send_message):
+        configuration = AppConfiguration.load()
+        configuration.notification_enabled = True
+        configuration.save()
+        Notification.objects.create(telegram_bot_token="token-one", telegram_chat_id="111")
+        Notification.objects.create(telegram_bot_token="token-two", telegram_chat_id="222")
+        event = TriggerEvent(symbol="BTCUSDT", title="BTC alert", message="Target crossed")
+
+        _notify(event, configuration)
+
+        self.assertEqual(send_message.call_count, 2)
+        self.assertEqual(
+            {call.args[2]["chat_id"] for call in send_message.call_args_list},
+            {"111", "222"},
+        )
+
+    def test_telegram_status_reports_multiple_configured_destinations(self):
+        configuration = AppConfiguration.load()
+        configuration.notification_enabled = True
+        configuration.save()
+        Notification.objects.create(telegram_bot_token="token-one", telegram_chat_id="1111")
+        Notification.objects.create(telegram_bot_token="token-two", telegram_chat_id="2222")
+
+        response = self.client.get("/api/telegram/status/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "configured": True,
+            "enabled": True,
+            "chat_hint": "...1111, ...2222",
+        })
+
+
+class MacdApproachTests(TestCase):
+    def test_thresholds_are_reported_separately_and_only_once_per_approach(self):
+        self.assertEqual(
+            _macd_approach_thresholds(-0.2, -0.09, 20, 9, Alert.Condition.CROSS_UP, None),
+            ([10], 10),
+        )
+        self.assertEqual(
+            _macd_approach_thresholds(-0.09, -0.04, 9, 4, Alert.Condition.CROSS_UP, 10),
+            ([5], 5),
+        )
+        self.assertEqual(
+            _macd_approach_thresholds(-0.04, -0.06, 4, 6, Alert.Condition.CROSS_UP, 5),
+            ([], None),
+        )
+
+    def test_approach_thresholds_follow_cross_direction(self):
+        self.assertEqual(
+            _macd_approach_thresholds(-0.2, -0.05, 20, 5, Alert.Condition.CROSS_DOWN, None),
+            ([], None),
+        )
+        self.assertEqual(
+            _macd_approach_thresholds(0.2, 0.05, 20, 5, Alert.Condition.CROSS_DOWN, None),
+            ([10, 5], 5),
+        )
+
+    @patch("alerts.services._macd_signal")
+    def test_checker_creates_distinct_events_for_10_and_5_percent(self, macd_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+            last_macd_gap_percent=20,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = {
+            "bar_time": bar_time, "previous_diff": -0.2, "current_diff": -0.09,
+            "close": 100, "macd": 1, "signal": 1.09, "atr": 1,
+        }
+
+        check_alerts()
+
+        warning = TriggerEvent.objects.get(alert=alert)
+        self.assertIn("10%", warning.title)
+        alert.refresh_from_db()
+        self.assertEqual(alert.last_macd_warning_threshold, 10)
+        self.assertTrue(alert.active)
+
+        macd_signal.return_value = {
+            "bar_time": bar_time + timedelta(minutes=1), "previous_diff": -0.09,
+            "current_diff": -0.04, "close": 100, "macd": 1, "signal": 1.04, "atr": 1,
+        }
+        check_alerts()
+
+        warnings = list(TriggerEvent.objects.filter(alert=alert).order_by("id"))
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("5%", warnings[1].title)
+        alert.refresh_from_db()
+        self.assertEqual(alert.last_macd_warning_threshold, 5)
+        self.assertTrue(alert.active)
+
 
 class TelegramAdminTests(TestCase):
     def setUp(self):
-        self.notification = Notification.load()
+        self.notification = Notification.objects.create()
         self.user = get_user_model().objects.create_superuser("admin", "admin@example.test", "password")
         self.client.force_login(self.user)
 
@@ -78,7 +176,7 @@ class TelegramAdminTests(TestCase):
         "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
     })
     def test_configuration_form_exposes_backend_telegram_actions(self):
-        response = self.client.get("/admin/alerts/notification/1/change/")
+        response = self.client.get(f"/admin/alerts/notification/{self.notification.pk}/change/")
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Find my Telegram chat ID")
@@ -88,7 +186,7 @@ class TelegramAdminTests(TestCase):
     def test_admin_chat_lookup_saves_chat_id(self, find_chat):
         find_chat.return_value = {"id": 512345678, "first_name": "Trader"}
 
-        response = self.client.post("/admin/alerts/notification/find-chat/")
+        response = self.client.post(f"/admin/alerts/notification/{self.notification.pk}/find-chat/")
 
         self.notification.refresh_from_db()
         self.assertEqual(response.status_code, 302)
@@ -97,14 +195,14 @@ class TelegramAdminTests(TestCase):
     def test_non_staff_cannot_use_telegram_admin_actions(self):
         self.client.logout()
 
-        response = self.client.post("/admin/alerts/notification/test-message/")
+        response = self.client.post(f"/admin/alerts/notification/{self.notification.pk}/test-message/")
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("/admin/login/", response.url)
 
     @patch("alerts.admin.send_telegram_test")
     def test_admin_test_message_uses_backend_service(self, send_test):
-        response = self.client.post("/admin/alerts/notification/test-message/")
+        response = self.client.post(f"/admin/alerts/notification/{self.notification.pk}/test-message/")
 
         self.assertEqual(response.status_code, 302)
         send_test.assert_called_once_with(self.notification)
@@ -112,7 +210,7 @@ class TelegramAdminTests(TestCase):
 
 class TelegramTestApiTests(TestCase):
     def setUp(self):
-        self.notification = Notification.load()
+        self.notification = Notification.objects.create()
         self.notification.telegram_bot_token = "server-only-token"
         self.notification.telegram_chat_id = "512345678"
         self.notification.save()
@@ -129,7 +227,10 @@ class TelegramTestApiTests(TestCase):
 
         self.assertEqual(csrf.status_code, 200)
         self.assertEqual(response.status_code, 200)
-        send_test.assert_called_once_with(self.notification, token="adhoc-token", chat_id="987654321")
+        send_test.assert_called_once()
+        self.assertIsInstance(send_test.call_args.args[0], Notification)
+        self.assertIsNone(send_test.call_args.args[0].pk)
+        self.assertEqual(send_test.call_args.kwargs, {"token": "adhoc-token", "chat_id": "987654321"})
         self.notification.refresh_from_db()
         self.assertEqual(self.notification.telegram_bot_token, "server-only-token")
         self.assertEqual(self.notification.telegram_chat_id, "512345678")
@@ -169,7 +270,10 @@ class TelegramTestApiTests(TestCase):
         self.assertEqual(csrf.status_code, 200)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {"chat_id": "987654321", "chat_name": "Ad hoc"})
-        find_chat.assert_called_once_with(self.notification, token="adhoc-token")
+        find_chat.assert_called_once()
+        self.assertIsInstance(find_chat.call_args.args[0], Notification)
+        self.assertIsNone(find_chat.call_args.args[0].pk)
+        self.assertEqual(find_chat.call_args.kwargs, {"token": "adhoc-token"})
 
     @patch("alerts.views.send_telegram_test")
     def test_staff_can_send_test_message_with_csrf(self, send_test):
@@ -185,7 +289,10 @@ class TelegramTestApiTests(TestCase):
         self.assertEqual(csrf.status_code, 200)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {"detail": "Test message sent."})
-        send_test.assert_called_once_with(self.notification, token="adhoc-token", chat_id="987654321")
+        send_test.assert_called_once()
+        self.assertIsInstance(send_test.call_args.args[0], Notification)
+        self.assertIsNone(send_test.call_args.args[0].pk)
+        self.assertEqual(send_test.call_args.kwargs, {"token": "adhoc-token", "chat_id": "987654321"})
         self.notification.refresh_from_db()
         self.assertEqual(self.notification.telegram_bot_token, "server-only-token")
         self.assertEqual(self.notification.telegram_chat_id, "512345678")
@@ -204,7 +311,10 @@ class TelegramTestApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {"chat_id": "987654321", "chat_name": "Ad hoc"})
-        find_chat.assert_called_once_with(self.notification, token="adhoc-token")
+        find_chat.assert_called_once()
+        self.assertIsInstance(find_chat.call_args.args[0], Notification)
+        self.assertIsNone(find_chat.call_args.args[0].pk)
+        self.assertEqual(find_chat.call_args.kwargs, {"token": "adhoc-token"})
         self.notification.refresh_from_db()
         self.assertEqual(self.notification.telegram_bot_token, "server-only-token")
 
