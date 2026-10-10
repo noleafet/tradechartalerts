@@ -226,7 +226,6 @@ export default function Home() {
             <label className="wide">Note <span className="optional">OPTIONAL</span><input name="note" maxLength={240} placeholder="Add a reminder for this alert" /></label>
             <button className="submit wide" disabled={busy}>{busy ? "Saving…" : "Save alert"}<span>↗</span></button>
           </form>
-          <p className="fine-print">Alerts and trigger history are stored in PostgreSQL. The Django worker must be running for live checks.</p>
         </section>
 
           <section className="panel list-panel">
