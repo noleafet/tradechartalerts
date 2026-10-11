@@ -1,4 +1,12 @@
-# TradeChartAlert — market alerts
+# Trade Chart Alerts (TCAs)
+
+[![VS Code](https://img.shields.io/badge/VS%20Code-Editor-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com/) 
+[![GitHub Copilot](https://img.shields.io/badge/GitHub%20Copilot-AI%20Coding%20Assistant-000000?logo=githubcopilot&logoColor=white)](https://github.com/features/copilot) 
+[![OpenCode](https://img.shields.io/badge/OpenCode-AI%20Coding%20Agent-000000?logo=opencode&logoColor=white)](https://opencode.ai/) 
+[![AI Engineering](https://img.shields.io/badge/AI-Engineering-8A2BE2?logo=artificialintelligence&logoColor=white)](https://en.wikipedia.org/wiki/Artificial_intelligence)
+
+> Unpolished codes, for testing, and learnings
+
 
 This project implements persistent Django + PostgreSQL backend, a Next.js dashboard with a live candlestick/volume chart, and Django management commands that check public market data independently of an open browser. The dashboard features exchange data pull (from Binance as default), a database-backed watchlist, dark mode, SMA/EMA/MACD overlays, Heikin Ashi, editable drawing tools and line alerts, browser notifications/sound, persistent price and MACD alerts. Chart preferences and drawings remain browser-local; alerts, trigger history, selected exchange, and watchlist symbols are stored by Django.
 
