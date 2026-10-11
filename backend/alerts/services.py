@@ -171,6 +171,35 @@ def _rsi_signal(symbol, timeframe, exchange, period=14):
     }
 
 
+def _trend_signal(symbol, timeframe, exchange, period=200):
+    candles = _candles_for(symbol, timeframe, exchange, max(period + 100, 500))
+    now_ms = int(time.time() * 1000)
+    closed = [candle for candle in candles if int(candle[6]) < now_ms]
+    if len(closed) < period:
+        return None
+    closes = [float(candle[4]) for candle in closed]
+    sma = sum(closes[-period:]) / period
+    index = len(closed) - 1
+    return {
+        "bar_time": datetime.fromtimestamp(int(closed[index][0]) / 1000, tz=dt_timezone.utc),
+        "sma": sma,
+        "close": closes[index],
+        "trend": "uptrend" if closes[index] >= sma else "downtrend",
+    }
+
+
+def _trend_confirmation(alert, trend):
+    """Return (hit, direction) for the trend filter aligned to the MACD condition."""
+    if alert.condition == Alert.Condition.CROSS_UP:
+        hit = trend["close"] >= trend["sma"]
+        return hit, ("uptrend" if hit else "downtrend")
+    if alert.condition == Alert.Condition.CROSS_DOWN:
+        hit = trend["close"] <= trend["sma"]
+        return hit, ("downtrend" if hit else "uptrend")
+    direction = "uptrend" if trend["close"] >= trend["sma"] else "downtrend"
+    return True, direction
+
+
 def _line_level(alert, at):
     if not alert.line_type or alert.line_price1 is None:
         return float(alert.price) if alert.price is not None else None
@@ -306,7 +335,8 @@ def check_alerts(*, stdout=None):
     price_symbols = {a.symbol for a in alerts if a.kind == Alert.Kind.PRICE}
     macd_keys = {(a.symbol, a.timeframe) for a in alerts if a.kind == Alert.Kind.MACD}
     rsi_keys = {(a.symbol, a.timeframe, a.rsi_period or 14) for a in alerts if a.kind == Alert.Kind.RSI or (a.kind == Alert.Kind.MACD and a.rsi_enabled)}
-    prices, macd_values, rsi_values = {}, {}, {}
+    trend_keys = {(a.symbol, a.timeframe, a.trend_period or 200) for a in alerts if a.kind == Alert.Kind.MACD and a.trend_enabled}
+    prices, macd_values, rsi_values, trend_values = {}, {}, {}, {}
     for symbol in sorted(price_symbols):
         try:
             prices[symbol] = _price_for(symbol, exchange)
@@ -322,6 +352,11 @@ def check_alerts(*, stdout=None):
             rsi_values[(symbol, timeframe, period)] = _rsi_signal(symbol, timeframe, exchange, period)
         except (requests.RequestException, KeyError, ValueError) as exc:
             logger.warning("Could not fetch %s %s RSI: %s", symbol, timeframe, exc)
+    for symbol, timeframe, period in sorted(trend_keys):
+        try:
+            trend_values[(symbol, timeframe, period)] = _trend_signal(symbol, timeframe, exchange, period)
+        except (requests.RequestException, KeyError, ValueError) as exc:
+            logger.warning("Could not fetch %s %s trend: %s", symbol, timeframe, exc)
 
     fired = []
     now = timezone.now()
@@ -329,11 +364,14 @@ def check_alerts(*, stdout=None):
         value = prices.get(snapshot.symbol) if snapshot.kind == Alert.Kind.PRICE else None
         macd = macd_values.get((snapshot.symbol, snapshot.timeframe)) if snapshot.kind == Alert.Kind.MACD else None
         rsi = rsi_values.get((snapshot.symbol, snapshot.timeframe, snapshot.rsi_period or 14)) if (snapshot.kind == Alert.Kind.RSI or (snapshot.kind == Alert.Kind.MACD and snapshot.rsi_enabled)) else None
+        trend = trend_values.get((snapshot.symbol, snapshot.timeframe, snapshot.trend_period or 200)) if (snapshot.kind == Alert.Kind.MACD and snapshot.trend_enabled) else None
         if snapshot.kind == Alert.Kind.PRICE and value is None:
             continue
         if snapshot.kind == Alert.Kind.MACD and macd is None:
             continue
         if (snapshot.kind == Alert.Kind.RSI or (snapshot.kind == Alert.Kind.MACD and snapshot.rsi_enabled)) and rsi is None:
+            continue
+        if snapshot.kind == Alert.Kind.MACD and snapshot.trend_enabled and trend is None:
             continue
         with transaction.atomic():
             alert = Alert.objects.select_for_update().filter(pk=snapshot.pk, active=True).first()
@@ -437,6 +475,22 @@ def check_alerts(*, stdout=None):
                                     observed_value=rsi["close"],
                                 )
                                 fired.append(rsi_event)
+                        # If trend filter is enabled, check trend conditions after MACD threshold triggers
+                        if alert.trend_enabled and trend:
+                            trend_hit, trend_direction = _trend_confirmation(alert, trend)
+                            if trend_hit:
+                                trend_event = TriggerEvent.objects.create(
+                                    alert=alert,
+                                    symbol=alert.symbol,
+                                    title=f"{alert.symbol} TREND {alert.timeframe} {trend_direction} (MACD {threshold}% threshold)",
+                                    message=(
+                                        f"Close {trend['close']:g} vs {alert.trend_period or 200} SMA "
+                                        f"{trend['sma']:.8g} (MACD {threshold}% approach triggered)"
+                                        + (f" — {alert.note}" if alert.note else "")
+                                    ),
+                                    observed_value=trend["close"],
+                                )
+                                fired.append(trend_event)
                     if hit and _may_fire(alert, now):
                         side = "bullish" if macd["current_diff"] > 0 else "bearish"
                         event = TriggerEvent.objects.create(
@@ -475,6 +529,22 @@ def check_alerts(*, stdout=None):
                                     observed_value=rsi["close"],
                                 )
                                 fired.append(rsi_event)
+                        # If trend filter is enabled, check trend conditions after MACD triggers
+                        if alert.trend_enabled and trend:
+                            trend_hit, trend_direction = _trend_confirmation(alert, trend)
+                            if trend_hit:
+                                trend_event = TriggerEvent.objects.create(
+                                    alert=alert,
+                                    symbol=alert.symbol,
+                                    title=f"{alert.symbol} TREND {alert.timeframe} {trend_direction} (MACD confirmation)",
+                                    message=(
+                                        f"Close {trend['close']:g} vs {alert.trend_period or 200} SMA "
+                                        f"{trend['sma']:.8g} (MACD {side} cross triggered)"
+                                        + (f" — {alert.note}" if alert.note else "")
+                                    ),
+                                    observed_value=trend["close"],
+                                )
+                                fired.append(trend_event)
             elif alert.kind == Alert.Kind.RSI:
                 bar_time = rsi["bar_time"]
                 rsi_value = rsi["rsi"]

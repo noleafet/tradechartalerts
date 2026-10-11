@@ -1,5 +1,5 @@
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -163,6 +163,98 @@ class MacdApproachTests(TestCase):
         alert.refresh_from_db()
         self.assertEqual(alert.last_macd_warning_threshold, 5)
         self.assertTrue(alert.active)
+
+
+class TrendFilterTests(TestCase):
+    def test_macd_alert_defaults_trend_period_to_200_sma(self):
+        response = self.client.post("/api/alerts/", {
+            "symbol": "BTCUSDT", "kind": "macd", "condition": "cross_up", "timeframe": "1h",
+            "trend_enabled": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data["trend_enabled"])
+        self.assertEqual(response.data["trend_period"], 200)
+
+    def test_macd_alert_rejects_out_of_range_trend_period(self):
+        response = self.client.post("/api/alerts/", {
+            "symbol": "BTCUSDT", "kind": "macd", "condition": "cross_up", "timeframe": "1h",
+            "trend_enabled": True, "trend_period": 1000,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("trend_period", response.data)
+
+    @patch("alerts.services._trend_signal")
+    @patch("alerts.services._macd_signal")
+    def test_trend_confirmation_fires_after_macd_cross(self, macd_signal, trend_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        self.assertEqual(alert.trend_period, 200)
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = {
+            "bar_time": bar_time, "previous_diff": -0.2, "current_diff": 0.1,
+            "close": 100, "macd": 1, "signal": 0.9, "atr": 1,
+        }
+        trend_signal.return_value = {
+            "bar_time": bar_time, "sma": 95, "close": 100, "trend": "uptrend",
+        }
+
+        check_alerts()
+
+        titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+        self.assertIn("BTCUSDT MACD 1m bullish cross", titles)
+        trend_event = TriggerEvent.objects.get(title="BTCUSDT TREND 1m uptrend (MACD confirmation)")
+        self.assertIn("200 SMA", trend_event.message)
+        trend_signal.assert_called_once_with("BTCUSDT", "1m", ANY, 200)
+
+    @patch("alerts.services._trend_signal")
+    @patch("alerts.services._macd_signal")
+    def test_trend_confirmation_skipped_when_price_below_sma(self, macd_signal, trend_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = {
+            "bar_time": bar_time, "previous_diff": -0.2, "current_diff": 0.1,
+            "close": 100, "macd": 1, "signal": 0.9, "atr": 1,
+        }
+        trend_signal.return_value = {
+            "bar_time": bar_time, "sma": 105, "close": 100, "trend": "downtrend",
+        }
+
+        check_alerts()
+
+        titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+        self.assertIn("BTCUSDT MACD 1m bullish cross", titles)
+        self.assertFalse(any("TREND" in title for title in titles))
+
+    @patch("alerts.services._trend_signal")
+    @patch("alerts.services._macd_signal")
+    def test_trend_failure_skips_alert_cycle(self, macd_signal, trend_signal):
+        Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = {
+            "bar_time": bar_time, "previous_diff": -0.2, "current_diff": 0.1,
+            "close": 100, "macd": 1, "signal": 0.9, "atr": 1,
+        }
+        trend_signal.return_value = None
+
+        check_alerts()
+
+        self.assertEqual(TriggerEvent.objects.count(), 0)
 
 
 class TelegramAdminTests(TestCase):

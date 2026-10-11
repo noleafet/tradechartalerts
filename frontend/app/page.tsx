@@ -11,6 +11,7 @@ type AlertItem = {
   line_price2?: string | null; line_extend?: boolean;
   rsi_period?: number; rsi_oversold?: number; rsi_overbought?: number;
   macd_threshold_5?: boolean; macd_threshold_10?: boolean; rsi_enabled?: boolean;
+  trend_enabled?: boolean; trend_period?: number;
 };
 type EventItem = { id: number; symbol: string; title: string; message: string; triggered_at: string };
 type Exchange = "binance" | "bybit";
@@ -76,6 +77,18 @@ export default function Home() {
       rsiCheckbox.addEventListener('change', updateRsiVisibility);
       updateRsiVisibility();
       return () => rsiCheckbox.removeEventListener('change', updateRsiVisibility);
+    }
+  }, [kind]);
+  useEffect(() => {
+    const trendCheckbox = document.querySelector('input[name="trend_enabled"]') as HTMLInputElement;
+    const trendSettings = document.querySelector('.trend-settings') as HTMLElement;
+    if (trendCheckbox && trendSettings) {
+      const updateTrendVisibility = () => {
+        trendSettings.style.display = trendCheckbox.checked ? 'block' : 'none';
+      };
+      trendCheckbox.addEventListener('change', updateTrendVisibility);
+      updateTrendVisibility();
+      return () => trendCheckbox.removeEventListener('change', updateTrendVisibility);
     }
   }, [kind]);
   useEffect(() => {
@@ -167,6 +180,11 @@ export default function Home() {
           payload.rsi_period = settings.period;
           payload.rsi_oversold = settings.oversold;
           payload.rsi_overbought = settings.overbought;
+        }
+        payload.trend_enabled = form.get("trend_enabled") === "on";
+        if (payload.trend_enabled) {
+          // Trend filter defaults to the 200 SMA
+          payload.trend_period = Number(form.get("trend_period")) || 200;
         }
       }
     }
@@ -276,6 +294,12 @@ export default function Home() {
                   <label>Oversold Level<input name="rsi_oversold" type="number" min="0" max="100" defaultValue="30" /></label>
                   <label>Overbought Level<input name="rsi_overbought" type="number" min="0" max="100" defaultValue="70" /></label>
                 </div>
+                <div className="checkbox-group">
+                  <label className="checkbox-label"><input type="checkbox" name="trend_enabled" /> Enable trend filter (triggers after MACD)</label>
+                </div>
+                <div className="trend-settings" style={{ display: "none" }}>
+                  <label>SMA Period<input name="trend_period" type="number" min="2" max="500" defaultValue="200" /></label>
+                </div>
               </>
             )}
             <label>Trigger frequency<select name="frequency"><option value="once">Once — disable after trigger</option><option value="every">Repeat — 60 second cooldown</option></select></label>
@@ -288,7 +312,7 @@ export default function Home() {
             <div className="panel-head"><div><p className="eyebrow">MONITOR</p><h2>Your alerts</h2></div><div className="panel-actions">{notificationAvailable && Notification.permission !== "granted" && alerts.length > 0 && <button className="refresh" onClick={requestNotifications}>Enable notifications</button>}<button className="refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? "Syncing…" : "↻ Refresh"}</button></div></div>
             {alerts.length ? <div className="alert-list">{alerts.map((item) => <article className={`alert-row ${item.active ? "" : "muted"}`} key={item.id}>
               <button aria-label={item.active ? "Pause alert" : "Enable alert"} className={`status-toggle ${item.active ? "enabled" : ""}`} onClick={() => void toggleAlert(item)}><span /></button>
-              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}${item.rsi_enabled ? " + RSI" : ""}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal${item.macd_threshold_5 || item.macd_threshold_10 ? ` (thresholds: ${[item.macd_threshold_5 && "5%", item.macd_threshold_10 && "10%"].filter(Boolean).join(", ")})` : ""}${item.rsi_enabled ? " with RSI confirmation" : ""}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
+              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}${item.rsi_enabled ? " + RSI" : ""}${item.trend_enabled ? " + Trend" : ""}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal${item.macd_threshold_5 || item.macd_threshold_10 ? ` (thresholds: ${[item.macd_threshold_5 && "5%", item.macd_threshold_10 && "10%"].filter(Boolean).join(", ")})` : ""}${item.rsi_enabled ? " with RSI confirmation" : ""}${item.trend_enabled ? ` with ${item.trend_period || 200} SMA trend filter` : ""}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
               <button className="delete" aria-label={`Delete ${item.symbol} alert`} onClick={() => void deleteAlert(item.id)}>×</button>
             </article>)}</div> : <div className="empty"><span>◷</span><b>No alerts yet</b><p>Your active conditions will appear here.</p></div>}
           </section>

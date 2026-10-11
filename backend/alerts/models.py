@@ -125,6 +125,8 @@ class Alert(models.Model):
     macd_threshold_10 = models.BooleanField(default=False, help_text="Enable 10% MACD cross approach threshold")
     rsi_enabled = models.BooleanField(default=False, help_text="Enable RSI check after MACD trigger")
     macd_triggered = models.BooleanField(default=False, help_text="Track if MACD has triggered for cascading RSI alert")
+    trend_enabled = models.BooleanField(default=False, help_text="Enable trend filter (SMA) check after MACD trigger")
+    trend_period = models.PositiveSmallIntegerField(default=200, null=True, blank=True, help_text="SMA period for the trend filter (defaults to the 200 SMA)")
 
     # Optional line-based price alert, preserving the drawing alert semantics of TradeChartAlert.
     line_type = models.CharField(max_length=8, choices=LineType.choices, blank=True, default="")

@@ -17,7 +17,7 @@ class AlertSerializer(serializers.ModelSerializer):
             "line_price1", "line_t2", "line_price2", "line_extend", "created_at",
             "updated_at", "last_triggered_at", "rsi_period", "rsi_oversold",
             "rsi_overbought", "last_rsi_value", "macd_threshold_5", "macd_threshold_10",
-            "rsi_enabled", "macd_triggered",
+            "rsi_enabled", "macd_triggered", "trend_enabled", "trend_period",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "last_triggered_at", "last_rsi_value", "macd_triggered"]
 
@@ -74,6 +74,11 @@ class AlertSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"rsi_overbought": "RSI overbought must be between 0 and 100."})
                 if rsi_oversold is not None and rsi_overbought is not None and rsi_oversold >= rsi_overbought:
                     raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be less than overbought."})
+            # Validate trend filter fields if the trend filter is enabled for MACD alert
+            if attrs.get("trend_enabled", getattr(self.instance, "trend_enabled", False)):
+                trend_period = attrs.get("trend_period", getattr(self.instance, "trend_period", 200))
+                if trend_period is not None and (trend_period < 2 or trend_period > 500):
+                    raise serializers.ValidationError({"trend_period": "Trend SMA period must be between 2 and 500."})
         elif kind == Alert.Kind.RSI:
             raise serializers.ValidationError({"kind": "RSI alerts are only available as a confirmation option for MACD alerts. Please create a MACD alert and enable RSI confirmation."})
         return attrs
