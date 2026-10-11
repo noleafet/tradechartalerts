@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import Alert, AppConfiguration, Exchange, Notification, TriggerEvent, WatchlistSymbol
-from .services import _macd_approach_thresholds, _notify, check_alerts, get_market_candles, get_market_quote
+from .services import _macd_approach_thresholds, _notify, _rsi, check_alerts, get_market_candles, get_market_quote
 
 
 class AlertApiTests(TestCase):
@@ -403,3 +403,70 @@ class MarketAdapterTests(TestCase):
 
         self.assertEqual([candle["time"] for candle in candles], [1, 2])
         self.assertEqual(candles[0]["close"], 1.5)
+
+
+class RsiAlertTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_rsi_matches_known_wilder_values(self):
+        closes = [44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
+                  45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64]
+        values = _rsi(closes, 14)
+        self.assertIsNone(values[13])
+        self.assertAlmostEqual(values[14], 70.46, places=1)
+        self.assertAlmostEqual(values[19], 57.92, delta=0.5)
+
+    def test_create_rsi_alert_validates_level_and_timeframe(self):
+        ok = self.client.post("/api/alerts/", {
+            "symbol": "btcusdt", "kind": "rsi", "condition": "cross_up",
+            "timeframe": "1h", "rsi_level": "70", "frequency": "every",
+        }, format="json")
+        self.assertEqual(ok.status_code, 201)
+        self.assertEqual(ok.data["rsi_level"], "70.00")
+        for payload in (
+            {"rsi_level": "120", "timeframe": "1h"},
+            {"rsi_level": "30", "timeframe": "2h"},
+            {"timeframe": "1h"},
+        ):
+            response = self.client.post("/api/alerts/", {
+                "symbol": "BTCUSDT", "kind": "rsi", "condition": "below", **payload,
+            }, format="json")
+            self.assertEqual(response.status_code, 400, payload)
+
+    @patch("alerts.services._rsi_signal")
+    def test_rsi_cross_arms_first_then_fires_on_next_closed_bar(self, rsi_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.RSI, condition=Alert.Condition.CROSS_UP,
+            timeframe="1h", rsi_level=70,
+        )
+        bar_time = timezone.now() - timedelta(hours=1)
+        rsi_signal.return_value = {"bar_time": bar_time, "previous_rsi": 60, "rsi": 72, "close": 100}
+        check_alerts()
+        self.assertFalse(TriggerEvent.objects.exists())
+
+        rsi_signal.return_value = {"bar_time": bar_time, "previous_rsi": 60, "rsi": 72, "close": 100}
+        alert.refresh_from_db()
+        alert.last_rsi = 65
+        alert.save()
+        check_alerts()  # same bar: no re-evaluation
+        self.assertFalse(TriggerEvent.objects.exists())
+
+        rsi_signal.return_value = {"bar_time": bar_time + timedelta(hours=1), "previous_rsi": 65, "rsi": 71.5, "close": 101}
+        check_alerts()
+        event = TriggerEvent.objects.get(alert=alert)
+        self.assertIn("RSI 1h", event.title)
+        alert.refresh_from_db()
+        self.assertFalse(alert.active)
+        self.assertEqual(alert.last_rsi, 71.5)
+
+    @patch("alerts.services._rsi_signal")
+    def test_rsi_below_fires_immediately(self, rsi_signal):
+        Alert.objects.create(
+            symbol="ETHUSDT", kind=Alert.Kind.RSI, condition=Alert.Condition.BELOW,
+            timeframe="4h", rsi_level=30,
+        )
+        rsi_signal.return_value = {"bar_time": timezone.now(), "previous_rsi": 32, "rsi": 28, "close": 2000}
+        fired = check_alerts()
+        self.assertEqual(len(fired), 1)
+        self.assertIn("is below 30", fired[0].title)

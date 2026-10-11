@@ -83,6 +83,7 @@ class Alert(models.Model):
     class Kind(models.TextChoices):
         PRICE = "price", "Price"
         MACD = "macd", "MACD cross"
+        RSI = "rsi", "RSI level"
 
     class Condition(models.TextChoices):
         CROSS_UP = "cross_up", "Crosses above"
@@ -117,6 +118,10 @@ class Alert(models.Model):
     last_macd_warning_threshold = models.PositiveSmallIntegerField(null=True, blank=True)
     cooldown_seconds = models.PositiveIntegerField(default=60)
 
+    # RSI alerts: 14-period Wilder RSI evaluated on closed candles of `timeframe`.
+    rsi_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    last_rsi = models.FloatField(null=True, blank=True)
+
     # Optional line-based price alert, preserving the drawing alert semantics of TradeChartAlert.
     line_type = models.CharField(max_length=8, choices=LineType.choices, blank=True, default="")
     line_t1 = models.DateTimeField(null=True, blank=True)
@@ -132,7 +137,12 @@ class Alert(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        target = f"MACD {self.timeframe}" if self.kind == self.Kind.MACD else str(self.price or "line")
+        if self.kind == self.Kind.MACD:
+            target = f"MACD {self.timeframe}"
+        elif self.kind == self.Kind.RSI:
+            target = f"RSI {self.timeframe} {self.rsi_level}"
+        else:
+            target = str(self.price or "line")
         return f"{self.symbol} {self.condition} {target}"
 
 

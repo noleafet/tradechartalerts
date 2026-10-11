@@ -4,8 +4,8 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import MarketWorkspace, { type Drawing } from "./market-workspace";
 
 type AlertItem = {
-  id: number; symbol: string; kind: "price" | "macd"; condition: string;
-  price: string | null; timeframe: string; note: string; frequency: "once" | "every";
+  id: number; symbol: string; kind: "price" | "macd" | "rsi"; condition: string;
+  price: string | null; rsi_level?: string | null; timeframe: string; note: string; frequency: "once" | "every";
   active: boolean; created_at: string; last_triggered_at: string | null;
   line_type?: string; line_t1?: string; line_price1?: string; line_t2?: string | null;
   line_price2?: string | null; line_extend?: boolean;
@@ -36,7 +36,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 export default function Home() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
-  const [kind, setKind] = useState<"price" | "macd">("price");
+  const [kind, setKind] = useState<"price" | "macd" | "rsi">("price");
   const [marketSymbol, setMarketSymbol] = useState("BTCUSDT");
   const [exchange, setExchange] = useState<Exchange>("binance");
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -130,6 +130,7 @@ export default function Home() {
     };
     if (kind === "price") payload.price = Number(form.get("price"));
     else payload.timeframe = String(form.get("timeframe"));
+    if (kind === "rsi") payload.rsi_level = Number(form.get("rsi_level"));
     try {
       await api<AlertItem>("/alerts/", { method: "POST", body: JSON.stringify(payload) });
       formElement.reset(); setTargetPrice(""); await refresh(); requestNotifications();
@@ -217,12 +218,13 @@ export default function Home() {
       <div className="content-grid dashboard-grid">
         <section className="panel create-panel">
           <div className="panel-head"><div><p className="eyebrow">CONFIGURE</p><h2>Create an alert</h2></div><span className="step">01 / 02</span></div>
-          <div className="kind-switch"><button className={kind === "price" ? "selected" : ""} onClick={() => setKind("price")}>Price level</button><button className={kind === "macd" ? "selected" : ""} onClick={() => setKind("macd")}>MACD cross</button></div>
+          <div className="kind-switch"><button className={kind === "price" ? "selected" : ""} onClick={() => setKind("price")}>Price level</button><button className={kind === "macd" ? "selected" : ""} onClick={() => setKind("macd")}>MACD cross</button><button className={kind === "rsi" ? "selected" : ""} onClick={() => setKind("rsi")}>RSI level</button></div>
           <form onSubmit={createAlert} className="alert-form">
             <label>Market symbol<input name="symbol" placeholder="BTCUSDT" required maxLength={24} autoComplete="off" value={marketSymbol} onChange={(event) => setMarketSymbol(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} /></label>
             {kind === "price" ? <label>Target price<input name="price" type="number" step="any" min="0" placeholder="68000.00" required value={targetPrice} onChange={(event) => setTargetPrice(event.target.value)} /></label> : <label>Timeframe<select name="timeframe" defaultValue="1h">{["1m", "5m", "15m", "1h", "4h", "1d", "1w"].map((tf) => <option key={tf}>{tf}</option>)}</select></label>}
-            <label>Condition<select name="condition" key={kind}>{(kind === "price" ? ["cross_up", "cross_down", "cross", "above", "below"] : ["cross_up", "cross_down", "cross"]).map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>
-            <label>Trigger frequency<select name="frequency"><option value="once">Once — disable after trigger</option><option value="every">Repeat — 60 second cooldown</option></select></label>
+            {kind === "rsi" && <label>RSI level <span className="optional">RSI 14</span><input name="rsi_level" type="number" step="any" min="0.01" max="99.99" placeholder="70" required defaultValue="70" /></label>}
+            <label>Condition<select name="condition" key={kind}>{(kind === "macd" ? ["cross_up", "cross_down", "cross"] : ["cross_up", "cross_down", "cross", "above", "below"]).map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>
+            <label className={kind === "rsi" ? "wide" : undefined}>Trigger frequency<select name="frequency"><option value="once">Once — disable after trigger</option><option value="every">Repeat — 60 second cooldown</option></select></label>
             <label className="wide">Note <span className="optional">OPTIONAL</span><input name="note" maxLength={240} placeholder="Add a reminder for this alert" /></label>
             <button className="submit wide" disabled={busy}>{busy ? "Saving…" : "Save alert"}<span>↗</span></button>
           </form>
@@ -232,7 +234,7 @@ export default function Home() {
             <div className="panel-head"><div><p className="eyebrow">MONITOR</p><h2>Your alerts</h2></div><div className="panel-actions">{notificationAvailable && Notification.permission !== "granted" && alerts.length > 0 && <button className="refresh" onClick={requestNotifications}>Enable notifications</button>}<button className="refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? "Syncing…" : "↻ Refresh"}</button></div></div>
             {alerts.length ? <div className="alert-list">{alerts.map((item) => <article className={`alert-row ${item.active ? "" : "muted"}`} key={item.id}>
               <button aria-label={item.active ? "Pause alert" : "Enable alert"} className={`status-toggle ${item.active ? "enabled" : ""}`} onClick={() => void toggleAlert(item)}><span /></button>
-              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
+              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}` : item.kind === "rsi" ? `RSI · ${item.timeframe}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal` : item.kind === "rsi" ? `RSI(14) ${conditions[item.condition]} ${Number(item.rsi_level)}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
               <button className="delete" aria-label={`Delete ${item.symbol} alert`} onClick={() => void deleteAlert(item.id)}>×</button>
             </article>)}</div> : <div className="empty"><span>◷</span><b>No alerts yet</b><p>Your active conditions will appear here.</p></div>}
           </section>

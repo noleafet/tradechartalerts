@@ -114,7 +114,7 @@ class ExchangeAdmin(admin.ModelAdmin):
 
 @admin.register(Alert)
 class AlertAdmin(admin.ModelAdmin):
-    list_display = ("symbol", "kind", "condition", "price", "timeframe", "active", "created_at")
+    list_display = ("symbol", "kind", "condition", "price", "rsi_level", "timeframe", "active", "created_at")
     list_filter = ("kind", "condition", "active", "frequency")
     search_fields = ("symbol", "note")
 

@@ -11,7 +11,7 @@ class AlertSerializer(serializers.ModelSerializer):
     class Meta:
         model = Alert
         fields = [
-            "id", "symbol", "kind", "condition", "price", "timeframe", "note",
+            "id", "symbol", "kind", "condition", "price", "rsi_level", "timeframe", "note",
             "frequency", "active", "cooldown_seconds", "line_type", "line_t1",
             "line_price1", "line_t2", "line_price2", "line_extend", "created_at",
             "updated_at", "last_triggered_at",
@@ -56,6 +56,17 @@ class AlertSerializer(serializers.ModelSerializer):
             timeframe = attrs.get("timeframe", getattr(self.instance, "timeframe", ""))
             if timeframe not in TIMEFRAMES:
                 raise serializers.ValidationError({"timeframe": f"Choose one of {', '.join(sorted(TIMEFRAMES))}."})
+            if attrs.get("line_type", ""):
+                raise serializers.ValidationError({"line_type": "Line alerts are only available for price alerts."})
+        elif kind == Alert.Kind.RSI:
+            if condition not in PRICE_CONDITIONS:
+                raise serializers.ValidationError({"condition": "Unsupported RSI condition."})
+            timeframe = attrs.get("timeframe", getattr(self.instance, "timeframe", ""))
+            if timeframe not in TIMEFRAMES:
+                raise serializers.ValidationError({"timeframe": f"Choose one of {', '.join(sorted(TIMEFRAMES))}."})
+            level = attrs.get("rsi_level", getattr(self.instance, "rsi_level", None))
+            if level is None or not 0 < level < 100:
+                raise serializers.ValidationError({"rsi_level": "RSI level must be between 0 and 100."})
             if attrs.get("line_type", ""):
                 raise serializers.ValidationError({"line_type": "Line alerts are only available for price alerts."})
         return attrs
