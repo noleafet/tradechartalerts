@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import MarketWorkspace, { type Drawing } from "./market-workspace";
 
 type AlertItem = {
-  id: number; symbol: string; kind: "price" | "macd" | "rsi"; condition: string;
+  id: number; symbol: string; kind: "price" | "macd"; condition: string;
   price: string | null; timeframe: string; note: string; frequency: "once" | "every";
   active: boolean; created_at: string; last_triggered_at: string | null;
   line_type?: string; line_t1?: string; line_price1?: string; line_t2?: string | null;
@@ -38,11 +38,12 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 export default function Home() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
-  const [kind, setKind] = useState<"price" | "macd" | "rsi">("price");
+  const [kind, setKind] = useState<"price" | "macd">("price");
   const [marketSymbol, setMarketSymbol] = useState("BTCUSDT");
   const [exchange, setExchange] = useState<Exchange>("binance");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [targetPrice, setTargetPrice] = useState("");
+  const [rsiEnabled, setRsiEnabled] = useState(false);
   const [notificationAvailable, setNotificationAvailable] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [clearedThrough, setClearedThrough] = useState("");
@@ -64,6 +65,19 @@ export default function Home() {
   useEffect(() => {
     try { if (localStorage.getItem("tradechart.theme") === "dark") setTheme("dark"); } catch { /* Storage can be unavailable. */ }
   }, []);
+
+  useEffect(() => {
+    const rsiCheckbox = document.querySelector('input[name="rsi_enabled"]') as HTMLInputElement;
+    const rsiSettings = document.querySelector('.rsi-settings') as HTMLElement;
+    if (rsiCheckbox && rsiSettings) {
+      const updateRsiVisibility = () => {
+        rsiSettings.style.display = rsiCheckbox.checked ? 'block' : 'none';
+      };
+      rsiCheckbox.addEventListener('change', updateRsiVisibility);
+      updateRsiVisibility();
+      return () => rsiCheckbox.removeEventListener('change', updateRsiVisibility);
+    }
+  }, [kind]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try { localStorage.setItem("tradechart.theme", theme); } catch { /* Storage can be unavailable. */ }
@@ -136,17 +150,29 @@ export default function Home() {
       if (kind === "macd") {
         payload.macd_threshold_5 = form.get("macd_threshold_5") === "on";
         payload.macd_threshold_10 = form.get("macd_threshold_10") === "on";
-      }
-      if (kind === "rsi") {
-        payload.rsi_period = Number(form.get("rsi_period")) || 14;
-        payload.rsi_oversold = Number(form.get("rsi_oversold")) || 30;
-        payload.rsi_overbought = Number(form.get("rsi_overbought")) || 70;
         payload.rsi_enabled = form.get("rsi_enabled") === "on";
+        if (payload.rsi_enabled) {
+          // Use recommended RSI settings based on MACD timeframe
+          const timeframe = String(form.get("timeframe"));
+          const rsiSettings: Record<string, { period: number; oversold: number; overbought: number }> = {
+            "1m": { period: 14, oversold: 30, overbought: 70 },
+            "5m": { period: 14, oversold: 30, overbought: 70 },
+            "15m": { period: 14, oversold: 30, overbought: 70 },
+            "1h": { period: 14, oversold: 30, overbought: 70 },
+            "4h": { period: 14, oversold: 30, overbought: 70 },
+            "1d": { period: 14, oversold: 30, overbought: 70 },
+            "1w": { period: 14, oversold: 30, overbought: 70 },
+          };
+          const settings = rsiSettings[timeframe] || rsiSettings["1h"];
+          payload.rsi_period = settings.period;
+          payload.rsi_oversold = settings.oversold;
+          payload.rsi_overbought = settings.overbought;
+        }
       }
     }
     try {
       await api<AlertItem>("/alerts/", { method: "POST", body: JSON.stringify(payload) });
-      formElement.reset(); setTargetPrice(""); await refresh(); requestNotifications();
+      formElement.reset(); setTargetPrice(""); setRsiEnabled(false); await refresh(); requestNotifications();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create alert.");
     } finally { setBusy(false); }
@@ -231,23 +257,25 @@ export default function Home() {
       <div className="content-grid dashboard-grid">
         <section className="panel create-panel">
           <div className="panel-head"><div><p className="eyebrow">CONFIGURE</p><h2>Create an alert</h2></div><span className="step">01 / 02</span></div>
-          <div className="kind-switch"><button className={kind === "price" ? "selected" : ""} onClick={() => setKind("price")}>Price level</button><button className={kind === "macd" ? "selected" : ""} onClick={() => setKind("macd")}>MACD cross</button><button className={kind === "rsi" ? "selected" : ""} onClick={() => setKind("rsi")}>RSI</button></div>
+          <div className="kind-switch"><button className={kind === "price" ? "selected" : ""} onClick={() => setKind("price")}>Price level</button><button className={kind === "macd" ? "selected" : ""} onClick={() => setKind("macd")}>MACD cross</button></div>
           <form onSubmit={createAlert} className="alert-form">
             <label>Market symbol<input name="symbol" placeholder="BTCUSDT" required maxLength={24} autoComplete="off" value={marketSymbol} onChange={(event) => setMarketSymbol(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} /></label>
             {kind === "price" ? <label>Target price<input name="price" type="number" step="any" min="0" placeholder="68000.00" required value={targetPrice} onChange={(event) => setTargetPrice(event.target.value)} /></label> : <label>Timeframe<select name="timeframe" defaultValue="1h">{["1m", "5m", "15m", "1h", "4h", "1d", "1w"].map((tf) => <option key={tf}>{tf}</option>)}</select></label>}
-            <label>Condition<select name="condition" key={kind}>{(kind === "price" ? ["cross_up", "cross_down", "cross", "above", "below"] : kind === "macd" ? ["cross_up", "cross_down", "cross"] : ["cross_up", "cross_down", "cross", "above", "below"]).map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>
+            <label>Condition<select name="condition" key={kind}>{(kind === "price" ? ["cross_up", "cross_down", "cross", "above", "below"] : ["cross_up", "cross_down", "cross"]).map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>
             {kind === "macd" && (
-              <div className="checkbox-group">
-                <label className="checkbox-label"><input type="checkbox" name="macd_threshold_5" /> Enable 5% MACD approach threshold</label>
-                <label className="checkbox-label"><input type="checkbox" name="macd_threshold_10" /> Enable 10% MACD approach threshold</label>
-              </div>
-            )}
-            {kind === "rsi" && (
               <>
-                <label>RSI Period<input name="rsi_period" type="number" min="2" max="100" defaultValue="14" /></label>
-                <label>Oversold Level<input name="rsi_oversold" type="number" min="0" max="100" defaultValue="30" /></label>
-                <label>Overbought Level<input name="rsi_overbought" type="number" min="0" max="100" defaultValue="70" /></label>
-                <label className="checkbox-label"><input type="checkbox" name="rsi_enabled" /> Enable only after MACD triggers (cascading)</label>
+                <div className="checkbox-group">
+                  <label className="checkbox-label"><input type="checkbox" name="macd_threshold_5" /> Enable 5% MACD approach threshold</label>
+                  <label className="checkbox-label"><input type="checkbox" name="macd_threshold_10" /> Enable 10% MACD approach threshold</label>
+                </div>
+                <div className="checkbox-group">
+                  <label className="checkbox-label"><input type="checkbox" name="rsi_enabled" /> Enable RSI confirmation (triggers after MACD)</label>
+                </div>
+                <div className="rsi-settings" style={{ display: "none" }}>
+                  <label>RSI Period<input name="rsi_period" type="number" min="2" max="100" defaultValue="14" /></label>
+                  <label>Oversold Level<input name="rsi_oversold" type="number" min="0" max="100" defaultValue="30" /></label>
+                  <label>Overbought Level<input name="rsi_overbought" type="number" min="0" max="100" defaultValue="70" /></label>
+                </div>
               </>
             )}
             <label>Trigger frequency<select name="frequency"><option value="once">Once — disable after trigger</option><option value="every">Repeat — 60 second cooldown</option></select></label>
@@ -260,7 +288,7 @@ export default function Home() {
             <div className="panel-head"><div><p className="eyebrow">MONITOR</p><h2>Your alerts</h2></div><div className="panel-actions">{notificationAvailable && Notification.permission !== "granted" && alerts.length > 0 && <button className="refresh" onClick={requestNotifications}>Enable notifications</button>}<button className="refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? "Syncing…" : "↻ Refresh"}</button></div></div>
             {alerts.length ? <div className="alert-list">{alerts.map((item) => <article className={`alert-row ${item.active ? "" : "muted"}`} key={item.id}>
               <button aria-label={item.active ? "Pause alert" : "Enable alert"} className={`status-toggle ${item.active ? "enabled" : ""}`} onClick={() => void toggleAlert(item)}><span /></button>
-              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}` : item.kind === "rsi" ? `RSI · ${item.timeframe}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal${item.macd_threshold_5 || item.macd_threshold_10 ? ` (thresholds: ${[item.macd_threshold_5 && "5%", item.macd_threshold_10 && "10%"].filter(Boolean).join(", ")})` : ""}` : item.kind === "rsi" ? `RSI ${conditions[item.condition]} ${item.rsi_enabled ? "(after MACD)" : ""}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
+              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}${item.rsi_enabled ? " + RSI" : ""}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal${item.macd_threshold_5 || item.macd_threshold_10 ? ` (thresholds: ${[item.macd_threshold_5 && "5%", item.macd_threshold_10 && "10%"].filter(Boolean).join(", ")})` : ""}${item.rsi_enabled ? " with RSI confirmation" : ""}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
               <button className="delete" aria-label={`Delete ${item.symbol} alert`} onClick={() => void deleteAlert(item.id)}>×</button>
             </article>)}</div> : <div className="empty"><span>◷</span><b>No alerts yet</b><p>Your active conditions will appear here.</p></div>}
           </section>

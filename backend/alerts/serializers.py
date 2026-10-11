@@ -61,27 +61,21 @@ class AlertSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"timeframe": f"Choose one of {', '.join(sorted(TIMEFRAMES))}."})
             if attrs.get("line_type", ""):
                 raise serializers.ValidationError({"line_type": "Line alerts are only available for price alerts."})
-            if attrs.get("rsi_enabled", False):
-                raise serializers.ValidationError({"rsi_enabled": "RSI enable is only available for RSI alerts."})
+            # Validate RSI fields if RSI is enabled for MACD alert
+            if attrs.get("rsi_enabled", getattr(self.instance, "rsi_enabled", False)):
+                rsi_period = attrs.get("rsi_period", getattr(self.instance, "rsi_period", 14))
+                if rsi_period is not None and (rsi_period < 2 or rsi_period > 100):
+                    raise serializers.ValidationError({"rsi_period": "RSI period must be between 2 and 100."})
+                rsi_oversold = attrs.get("rsi_oversold", getattr(self.instance, "rsi_oversold", 30))
+                if rsi_oversold is not None and (rsi_oversold < 0 or rsi_oversold > 100):
+                    raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be between 0 and 100."})
+                rsi_overbought = attrs.get("rsi_overbought", getattr(self.instance, "rsi_overbought", 70))
+                if rsi_overbought is not None and (rsi_overbought < 0 or rsi_overbought > 100):
+                    raise serializers.ValidationError({"rsi_overbought": "RSI overbought must be between 0 and 100."})
+                if rsi_oversold is not None and rsi_overbought is not None and rsi_oversold >= rsi_overbought:
+                    raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be less than overbought."})
         elif kind == Alert.Kind.RSI:
-            if condition not in RSI_CONDITIONS:
-                raise serializers.ValidationError({"condition": "RSI supports cross_up, cross_down, cross, above, or below."})
-            timeframe = attrs.get("timeframe", getattr(self.instance, "timeframe", ""))
-            if timeframe not in TIMEFRAMES:
-                raise serializers.ValidationError({"timeframe": f"Choose one of {', '.join(sorted(TIMEFRAMES))}."})
-            if attrs.get("line_type", ""):
-                raise serializers.ValidationError({"line_type": "Line alerts are only available for price alerts."})
-            rsi_period = attrs.get("rsi_period", getattr(self.instance, "rsi_period", 14))
-            if rsi_period is not None and (rsi_period < 2 or rsi_period > 100):
-                raise serializers.ValidationError({"rsi_period": "RSI period must be between 2 and 100."})
-            rsi_oversold = attrs.get("rsi_oversold", getattr(self.instance, "rsi_oversold", 30))
-            if rsi_oversold is not None and (rsi_oversold < 0 or rsi_oversold > 100):
-                raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be between 0 and 100."})
-            rsi_overbought = attrs.get("rsi_overbought", getattr(self.instance, "rsi_overbought", 70))
-            if rsi_overbought is not None and (rsi_overbought < 0 or rsi_overbought > 100):
-                raise serializers.ValidationError({"rsi_overbought": "RSI overbought must be between 0 and 100."})
-            if rsi_oversold is not None and rsi_overbought is not None and rsi_oversold >= rsi_overbought:
-                raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be less than overbought."})
+            raise serializers.ValidationError({"kind": "RSI alerts are only available as a confirmation option for MACD alerts. Please create a MACD alert and enable RSI confirmation."})
         return attrs
 
 

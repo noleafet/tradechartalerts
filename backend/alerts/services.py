@@ -305,7 +305,7 @@ def check_alerts(*, stdout=None):
     alerts = list(Alert.objects.filter(active=True).order_by("id"))
     price_symbols = {a.symbol for a in alerts if a.kind == Alert.Kind.PRICE}
     macd_keys = {(a.symbol, a.timeframe) for a in alerts if a.kind == Alert.Kind.MACD}
-    rsi_keys = {(a.symbol, a.timeframe, a.rsi_period or 14) for a in alerts if a.kind == Alert.Kind.RSI}
+    rsi_keys = {(a.symbol, a.timeframe, a.rsi_period or 14) for a in alerts if a.kind == Alert.Kind.RSI or (a.kind == Alert.Kind.MACD and a.rsi_enabled)}
     prices, macd_values, rsi_values = {}, {}, {}
     for symbol in sorted(price_symbols):
         try:
@@ -328,12 +328,12 @@ def check_alerts(*, stdout=None):
     for snapshot in alerts:
         value = prices.get(snapshot.symbol) if snapshot.kind == Alert.Kind.PRICE else None
         macd = macd_values.get((snapshot.symbol, snapshot.timeframe)) if snapshot.kind == Alert.Kind.MACD else None
-        rsi = rsi_values.get((snapshot.symbol, snapshot.timeframe, snapshot.rsi_period or 14)) if snapshot.kind == Alert.Kind.RSI else None
+        rsi = rsi_values.get((snapshot.symbol, snapshot.timeframe, snapshot.rsi_period or 14)) if (snapshot.kind == Alert.Kind.RSI or (snapshot.kind == Alert.Kind.MACD and snapshot.rsi_enabled)) else None
         if snapshot.kind == Alert.Kind.PRICE and value is None:
             continue
         if snapshot.kind == Alert.Kind.MACD and macd is None:
             continue
-        if snapshot.kind == Alert.Kind.RSI and rsi is None:
+        if (snapshot.kind == Alert.Kind.RSI or (snapshot.kind == Alert.Kind.MACD and snapshot.rsi_enabled)) and rsi is None:
             continue
         with transaction.atomic():
             alert = Alert.objects.select_for_update().filter(pk=snapshot.pk, active=True).first()
@@ -409,6 +409,34 @@ def check_alerts(*, stdout=None):
                             ),
                             observed_value=macd["close"],
                         ))
+                        # If RSI is enabled, check RSI conditions after MACD threshold triggers
+                        if alert.rsi_enabled and rsi:
+                            rsi_value = rsi["rsi"]
+                            rsi_oversold = alert.rsi_oversold or 30
+                            rsi_overbought = alert.rsi_overbought or 70
+                            rsi_hit = False
+                            rsi_level = None
+
+                            # Use MACD condition to determine RSI check direction
+                            if alert.condition == Alert.Condition.CROSS_UP:
+                                rsi_level = rsi_overbought
+                                rsi_hit = rsi_value >= rsi_level
+                            elif alert.condition == Alert.Condition.CROSS_DOWN:
+                                rsi_level = rsi_oversold
+                                rsi_hit = rsi_value <= rsi_level
+                            elif alert.condition == Alert.Condition.CROSS:
+                                rsi_hit = (rsi_value <= rsi_oversold) or (rsi_value >= rsi_overbought)
+
+                            if rsi_hit:
+                                rsi_direction = "overbought" if rsi_value >= rsi_overbought else "oversold"
+                                rsi_event = TriggerEvent.objects.create(
+                                    alert=alert,
+                                    symbol=alert.symbol,
+                                    title=f"{alert.symbol} RSI {alert.timeframe} {rsi_direction} (MACD {threshold}% threshold)",
+                                    message=f"RSI {rsi_value:.2f}, close {rsi['close']:g} (MACD {threshold}% approach triggered)" + (f" — {alert.note}" if alert.note else ""),
+                                    observed_value=rsi["close"],
+                                )
+                                fired.append(rsi_event)
                     if hit and _may_fire(alert, now):
                         side = "bullish" if macd["current_diff"] > 0 else "bearish"
                         event = TriggerEvent.objects.create(
@@ -419,6 +447,34 @@ def check_alerts(*, stdout=None):
                             observed_value=macd["close"],
                         )
                         alert.macd_triggered = True
+                        # If RSI is enabled, check RSI conditions after MACD triggers
+                        if alert.rsi_enabled and rsi:
+                            rsi_value = rsi["rsi"]
+                            rsi_oversold = alert.rsi_oversold or 30
+                            rsi_overbought = alert.rsi_overbought or 70
+                            rsi_hit = False
+                            rsi_level = None
+
+                            # Use MACD condition to determine RSI check direction
+                            if alert.condition == Alert.Condition.CROSS_UP:
+                                rsi_level = rsi_overbought
+                                rsi_hit = rsi_value >= rsi_level
+                            elif alert.condition == Alert.Condition.CROSS_DOWN:
+                                rsi_level = rsi_oversold
+                                rsi_hit = rsi_value <= rsi_level
+                            elif alert.condition == Alert.Condition.CROSS:
+                                rsi_hit = (rsi_value <= rsi_oversold) or (rsi_value >= rsi_overbought)
+
+                            if rsi_hit:
+                                rsi_direction = "overbought" if rsi_value >= rsi_overbought else "oversold"
+                                rsi_event = TriggerEvent.objects.create(
+                                    alert=alert,
+                                    symbol=alert.symbol,
+                                    title=f"{alert.symbol} RSI {alert.timeframe} {rsi_direction} (MACD confirmation)",
+                                    message=f"RSI {rsi_value:.2f}, close {rsi['close']:g} (MACD {side} cross triggered)" + (f" — {alert.note}" if alert.note else ""),
+                                    observed_value=rsi["close"],
+                                )
+                                fired.append(rsi_event)
             elif alert.kind == Alert.Kind.RSI:
                 bar_time = rsi["bar_time"]
                 rsi_value = rsi["rsi"]
@@ -428,40 +484,34 @@ def check_alerts(*, stdout=None):
                 hit = False
                 level = None
 
-                # Check cascading condition: if RSI is enabled, only trigger after MACD has triggered
-                if alert.rsi_enabled and not alert.macd_triggered:
-                    # Skip RSI check until MACD triggers
-                    alert.last_rsi_value = rsi_value
-                    alert.last_observed_value = rsi["close"]
-                else:
-                    if alert.condition == Alert.Condition.ABOVE:
-                        level = rsi_overbought
-                        hit = rsi_value >= level
-                    elif alert.condition == Alert.Condition.BELOW:
-                        level = rsi_oversold
-                        hit = rsi_value <= level
-                    elif alert.condition == Alert.Condition.CROSS_UP:
-                        level = rsi_overbought
-                        hit = previous_rsi is not None and previous_rsi < level <= rsi_value
-                    elif alert.condition == Alert.Condition.CROSS_DOWN:
-                        level = rsi_oversold
-                        hit = previous_rsi is not None and previous_rsi > level >= rsi_value
-                    elif alert.condition == Alert.Condition.CROSS:
-                        if previous_rsi is not None:
-                            hit = (previous_rsi < rsi_oversold <= rsi_value) or (previous_rsi > rsi_overbought >= rsi_value)
+                if alert.condition == Alert.Condition.ABOVE:
+                    level = rsi_overbought
+                    hit = rsi_value >= level
+                elif alert.condition == Alert.Condition.BELOW:
+                    level = rsi_oversold
+                    hit = rsi_value <= level
+                elif alert.condition == Alert.Condition.CROSS_UP:
+                    level = rsi_overbought
+                    hit = previous_rsi is not None and previous_rsi < level <= rsi_value
+                elif alert.condition == Alert.Condition.CROSS_DOWN:
+                    level = rsi_oversold
+                    hit = previous_rsi is not None and previous_rsi > level >= rsi_value
+                elif alert.condition == Alert.Condition.CROSS:
+                    if previous_rsi is not None:
+                        hit = (previous_rsi < rsi_oversold <= rsi_value) or (previous_rsi > rsi_overbought >= rsi_value)
 
-                    alert.last_rsi_value = rsi_value
-                    alert.last_observed_value = rsi["close"]
+                alert.last_rsi_value = rsi_value
+                alert.last_observed_value = rsi["close"]
 
-                    if hit and _may_fire(alert, now):
-                        direction = alert.get_condition_display().lower()
-                        event = TriggerEvent.objects.create(
-                            alert=alert,
-                            symbol=alert.symbol,
-                            title=f"{alert.symbol} RSI {alert.timeframe} {direction} {level:g}",
-                            message=f"RSI {rsi_value:.2f}, close {rsi['close']:g}" + (f" — {alert.note}" if alert.note else ""),
-                            observed_value=rsi["close"],
-                        )
+                if hit and _may_fire(alert, now):
+                    direction = alert.get_condition_display().lower()
+                    event = TriggerEvent.objects.create(
+                        alert=alert,
+                        symbol=alert.symbol,
+                        title=f"{alert.symbol} RSI {alert.timeframe} {direction} {level:g}",
+                        message=f"RSI {rsi_value:.2f}, close {rsi['close']:g}" + (f" — {alert.note}" if alert.note else ""),
+                        observed_value=rsi["close"],
+                    )
             if event is not None:
                 alert.last_triggered_at = now
                 if alert.frequency == Alert.Frequency.ONCE:
