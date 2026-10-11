@@ -188,16 +188,25 @@ def _trend_signal(symbol, timeframe, exchange, period=200):
     }
 
 
-def _trend_confirmation(alert, trend):
-    """Return (hit, direction) for the trend filter aligned to the MACD condition."""
-    if alert.condition == Alert.Condition.CROSS_UP:
-        hit = trend["close"] >= trend["sma"]
-        return hit, ("uptrend" if hit else "downtrend")
-    if alert.condition == Alert.Condition.CROSS_DOWN:
-        hit = trend["close"] <= trend["sma"]
-        return hit, ("downtrend" if hit else "uptrend")
-    direction = "uptrend" if trend["close"] >= trend["sma"] else "downtrend"
-    return True, direction
+def _rsi_classification(alert, rsi):
+    """Classify RSI momentum as bullish, bearish, or balanced. Informational only — never blocks a MACD alert."""
+    value = rsi["rsi"]
+    if value >= (alert.rsi_overbought or 70):
+        return "bullish"
+    if value <= (alert.rsi_oversold or 30):
+        return "bearish"
+    return "balanced"
+
+
+def _trend_classification(alert, trend):
+    """Classify price relative to the SMA as bullish, bearish, or balanced. Informational only — never blocks a MACD alert."""
+    close, sma = trend["close"], trend["sma"]
+    tolerance = sma * 0.001  # within 0.1% of the SMA counts as balanced
+    if close > sma + tolerance:
+        return "bullish"
+    if close < sma - tolerance:
+        return "bearish"
+    return "balanced"
 
 
 def _line_level(alert, at):
@@ -367,11 +376,9 @@ def check_alerts(*, stdout=None):
         trend = trend_values.get((snapshot.symbol, snapshot.timeframe, snapshot.trend_period or 200)) if (snapshot.kind == Alert.Kind.MACD and snapshot.trend_enabled) else None
         if snapshot.kind == Alert.Kind.PRICE and value is None:
             continue
+        if snapshot.kind == Alert.Kind.RSI and rsi is None:
+            continue
         if snapshot.kind == Alert.Kind.MACD and macd is None:
-            continue
-        if (snapshot.kind == Alert.Kind.RSI or (snapshot.kind == Alert.Kind.MACD and snapshot.rsi_enabled)) and rsi is None:
-            continue
-        if snapshot.kind == Alert.Kind.MACD and snapshot.trend_enabled and trend is None:
             continue
         with transaction.atomic():
             alert = Alert.objects.select_for_update().filter(pk=snapshot.pk, active=True).first()
@@ -447,50 +454,32 @@ def check_alerts(*, stdout=None):
                             ),
                             observed_value=macd["close"],
                         ))
-                        # If RSI is enabled, check RSI conditions after MACD threshold triggers
+                        # RSI info only: classify momentum, never block the MACD alert
                         if alert.rsi_enabled and rsi:
-                            rsi_value = rsi["rsi"]
-                            rsi_oversold = alert.rsi_oversold or 30
-                            rsi_overbought = alert.rsi_overbought or 70
-                            rsi_hit = False
-                            rsi_level = None
-
-                            # Use MACD condition to determine RSI check direction
-                            if alert.condition == Alert.Condition.CROSS_UP:
-                                rsi_level = rsi_overbought
-                                rsi_hit = rsi_value >= rsi_level
-                            elif alert.condition == Alert.Condition.CROSS_DOWN:
-                                rsi_level = rsi_oversold
-                                rsi_hit = rsi_value <= rsi_level
-                            elif alert.condition == Alert.Condition.CROSS:
-                                rsi_hit = (rsi_value <= rsi_oversold) or (rsi_value >= rsi_overbought)
-
-                            if rsi_hit:
-                                rsi_direction = "overbought" if rsi_value >= rsi_overbought else "oversold"
-                                rsi_event = TriggerEvent.objects.create(
-                                    alert=alert,
-                                    symbol=alert.symbol,
-                                    title=f"{alert.symbol} RSI {alert.timeframe} {rsi_direction} (MACD {threshold}% threshold)",
-                                    message=f"RSI {rsi_value:.2f}, close {rsi['close']:g} (MACD {threshold}% approach triggered)" + (f" — {alert.note}" if alert.note else ""),
-                                    observed_value=rsi["close"],
-                                )
-                                fired.append(rsi_event)
-                        # If trend filter is enabled, check trend conditions after MACD threshold triggers
+                            rsi_state = _rsi_classification(alert, rsi)
+                            rsi_event = TriggerEvent.objects.create(
+                                alert=alert,
+                                symbol=alert.symbol,
+                                title=f"{alert.symbol} RSI {alert.timeframe} {rsi_state} (MACD {threshold}% threshold)",
+                                message=f"RSI {rsi['rsi']:.2f} ({rsi_state}), close {rsi['close']:g} (MACD {threshold}% approach triggered)" + (f" — {alert.note}" if alert.note else ""),
+                                observed_value=rsi["close"],
+                            )
+                            fired.append(rsi_event)
+                        # Trend filter info only: classify price vs SMA, never block the MACD alert
                         if alert.trend_enabled and trend:
-                            trend_hit, trend_direction = _trend_confirmation(alert, trend)
-                            if trend_hit:
-                                trend_event = TriggerEvent.objects.create(
-                                    alert=alert,
-                                    symbol=alert.symbol,
-                                    title=f"{alert.symbol} TREND {alert.timeframe} {trend_direction} (MACD {threshold}% threshold)",
-                                    message=(
-                                        f"Close {trend['close']:g} vs {alert.trend_period or 200} SMA "
-                                        f"{trend['sma']:.8g} (MACD {threshold}% approach triggered)"
-                                        + (f" — {alert.note}" if alert.note else "")
-                                    ),
-                                    observed_value=trend["close"],
-                                )
-                                fired.append(trend_event)
+                            trend_state = _trend_classification(alert, trend)
+                            trend_event = TriggerEvent.objects.create(
+                                alert=alert,
+                                symbol=alert.symbol,
+                                title=f"{alert.symbol} TREND {alert.timeframe} {trend_state} (MACD {threshold}% threshold)",
+                                message=(
+                                    f"Close {trend['close']:g} vs {alert.trend_period or 200} SMA "
+                                    f"{trend['sma']:.8g} ({trend_state}) (MACD {threshold}% approach triggered)"
+                                    + (f" — {alert.note}" if alert.note else "")
+                                ),
+                                observed_value=trend["close"],
+                            )
+                            fired.append(trend_event)
                     if hit and _may_fire(alert, now):
                         side = "bullish" if macd["current_diff"] > 0 else "bearish"
                         event = TriggerEvent.objects.create(
@@ -501,50 +490,32 @@ def check_alerts(*, stdout=None):
                             observed_value=macd["close"],
                         )
                         alert.macd_triggered = True
-                        # If RSI is enabled, check RSI conditions after MACD triggers
+                        # RSI info only: classify momentum, never block the MACD alert
                         if alert.rsi_enabled and rsi:
-                            rsi_value = rsi["rsi"]
-                            rsi_oversold = alert.rsi_oversold or 30
-                            rsi_overbought = alert.rsi_overbought or 70
-                            rsi_hit = False
-                            rsi_level = None
-
-                            # Use MACD condition to determine RSI check direction
-                            if alert.condition == Alert.Condition.CROSS_UP:
-                                rsi_level = rsi_overbought
-                                rsi_hit = rsi_value >= rsi_level
-                            elif alert.condition == Alert.Condition.CROSS_DOWN:
-                                rsi_level = rsi_oversold
-                                rsi_hit = rsi_value <= rsi_level
-                            elif alert.condition == Alert.Condition.CROSS:
-                                rsi_hit = (rsi_value <= rsi_oversold) or (rsi_value >= rsi_overbought)
-
-                            if rsi_hit:
-                                rsi_direction = "overbought" if rsi_value >= rsi_overbought else "oversold"
-                                rsi_event = TriggerEvent.objects.create(
-                                    alert=alert,
-                                    symbol=alert.symbol,
-                                    title=f"{alert.symbol} RSI {alert.timeframe} {rsi_direction} (MACD confirmation)",
-                                    message=f"RSI {rsi_value:.2f}, close {rsi['close']:g} (MACD {side} cross triggered)" + (f" — {alert.note}" if alert.note else ""),
-                                    observed_value=rsi["close"],
-                                )
-                                fired.append(rsi_event)
-                        # If trend filter is enabled, check trend conditions after MACD triggers
+                            rsi_state = _rsi_classification(alert, rsi)
+                            rsi_event = TriggerEvent.objects.create(
+                                alert=alert,
+                                symbol=alert.symbol,
+                                title=f"{alert.symbol} RSI {alert.timeframe} {rsi_state} (MACD confirmation)",
+                                message=f"RSI {rsi['rsi']:.2f} ({rsi_state}), close {rsi['close']:g} (MACD {side} cross triggered)" + (f" — {alert.note}" if alert.note else ""),
+                                observed_value=rsi["close"],
+                            )
+                            fired.append(rsi_event)
+                        # Trend filter info only: classify price vs SMA, never block the MACD alert
                         if alert.trend_enabled and trend:
-                            trend_hit, trend_direction = _trend_confirmation(alert, trend)
-                            if trend_hit:
-                                trend_event = TriggerEvent.objects.create(
-                                    alert=alert,
-                                    symbol=alert.symbol,
-                                    title=f"{alert.symbol} TREND {alert.timeframe} {trend_direction} (MACD confirmation)",
-                                    message=(
-                                        f"Close {trend['close']:g} vs {alert.trend_period or 200} SMA "
-                                        f"{trend['sma']:.8g} (MACD {side} cross triggered)"
-                                        + (f" — {alert.note}" if alert.note else "")
-                                    ),
-                                    observed_value=trend["close"],
-                                )
-                                fired.append(trend_event)
+                            trend_state = _trend_classification(alert, trend)
+                            trend_event = TriggerEvent.objects.create(
+                                alert=alert,
+                                symbol=alert.symbol,
+                                title=f"{alert.symbol} TREND {alert.timeframe} {trend_state} (MACD confirmation)",
+                                message=(
+                                    f"Close {trend['close']:g} vs {alert.trend_period or 200} SMA "
+                                    f"{trend['sma']:.8g} ({trend_state}) (MACD {side} cross triggered)"
+                                    + (f" — {alert.note}" if alert.note else "")
+                                ),
+                                observed_value=trend["close"],
+                            )
+                            fired.append(trend_event)
             elif alert.kind == Alert.Kind.RSI:
                 bar_time = rsi["bar_time"]
                 rsi_value = rsi["rsi"]

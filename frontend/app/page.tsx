@@ -287,7 +287,7 @@ export default function Home() {
                   <label className="checkbox-label"><input type="checkbox" name="macd_threshold_10" /> Enable 10% MACD approach threshold</label>
                 </div>
                 <div className="checkbox-group">
-                  <label className="checkbox-label"><input type="checkbox" name="rsi_enabled" /> Enable RSI confirmation (triggers after MACD)</label>
+                  <label className="checkbox-label"><input type="checkbox" name="rsi_enabled" /> Enable RSI info — bullish / bearish / balanced (with MACD)</label>
                 </div>
                 <div className="rsi-settings" style={{ display: "none" }}>
                   <label>RSI Period<input name="rsi_period" type="number" min="2" max="100" defaultValue="14" /></label>
@@ -295,7 +295,7 @@ export default function Home() {
                   <label>Overbought Level<input name="rsi_overbought" type="number" min="0" max="100" defaultValue="70" /></label>
                 </div>
                 <div className="checkbox-group">
-                  <label className="checkbox-label"><input type="checkbox" name="trend_enabled" /> Enable trend filter (triggers after MACD)</label>
+                  <label className="checkbox-label"><input type="checkbox" name="trend_enabled" /> Enable trend info — bullish / bearish / balanced (with MACD)</label>
                 </div>
                 <div className="trend-settings" style={{ display: "none" }}>
                   <label>SMA Period<input name="trend_period" type="number" min="2" max="500" defaultValue="200" /></label>
@@ -312,7 +312,7 @@ export default function Home() {
             <div className="panel-head"><div><p className="eyebrow">MONITOR</p><h2>Your alerts</h2></div><div className="panel-actions">{notificationAvailable && Notification.permission !== "granted" && alerts.length > 0 && <button className="refresh" onClick={requestNotifications}>Enable notifications</button>}<button className="refresh" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? "Syncing…" : "↻ Refresh"}</button></div></div>
             {alerts.length ? <div className="alert-list">{alerts.map((item) => <article className={`alert-row ${item.active ? "" : "muted"}`} key={item.id}>
               <button aria-label={item.active ? "Pause alert" : "Enable alert"} className={`status-toggle ${item.active ? "enabled" : ""}`} onClick={() => void toggleAlert(item)}><span /></button>
-              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}${item.rsi_enabled ? " + RSI" : ""}${item.trend_enabled ? " + Trend" : ""}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal${item.macd_threshold_5 || item.macd_threshold_10 ? ` (thresholds: ${[item.macd_threshold_5 && "5%", item.macd_threshold_10 && "10%"].filter(Boolean).join(", ")})` : ""}${item.rsi_enabled ? " with RSI confirmation" : ""}${item.trend_enabled ? ` with ${item.trend_period || 200} SMA trend filter` : ""}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
+              <div className="alert-details"><div className="alert-title"><b>{item.symbol}</b><span className="tag">{item.kind === "macd" ? `MACD · ${item.timeframe}${item.rsi_enabled ? " + RSI" : ""}${item.trend_enabled ? " + Trend" : ""}` : item.line_type ? "DRAWING" : "PRICE"}</span></div><p>{item.kind === "macd" ? `MACD ${conditions[item.condition]} signal${item.macd_threshold_5 || item.macd_threshold_10 ? ` (thresholds: ${[item.macd_threshold_5 && "5%", item.macd_threshold_10 && "10%"].filter(Boolean).join(", ")})` : ""}${item.rsi_enabled ? " with RSI info" : ""}${item.trend_enabled ? ` with trend info (${item.trend_period || 200} SMA)` : ""}` : item.line_type ? `${conditions[item.condition]} drawing level` : `${conditions[item.condition]} ${Number(item.price).toLocaleString()}`}{item.note ? <span className="note"> · {item.note}</span> : null}</p><small>{item.frequency === "once" ? "ONE SHOT" : "REPEATING"} · CREATED {new Date(item.created_at).toLocaleString()}</small></div>
               <button className="delete" aria-label={`Delete ${item.symbol} alert`} onClick={() => void deleteAlert(item.id)}>×</button>
             </article>)}</div> : <div className="empty"><span>◷</span><b>No alerts yet</b><p>Your active conditions will appear here.</p></div>}
           </section>

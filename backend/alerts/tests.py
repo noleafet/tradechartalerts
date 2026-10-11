@@ -187,7 +187,7 @@ class TrendFilterTests(TestCase):
 
     @patch("alerts.services._trend_signal")
     @patch("alerts.services._macd_signal")
-    def test_trend_confirmation_fires_after_macd_cross(self, macd_signal, trend_signal):
+    def test_trend_info_fires_after_macd_cross(self, macd_signal, trend_signal):
         alert = Alert.objects.create(
             symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
             timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
@@ -208,13 +208,14 @@ class TrendFilterTests(TestCase):
 
         titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
         self.assertIn("BTCUSDT MACD 1m bullish cross", titles)
-        trend_event = TriggerEvent.objects.get(title="BTCUSDT TREND 1m uptrend (MACD confirmation)")
+        trend_event = TriggerEvent.objects.get(title="BTCUSDT TREND 1m bullish (MACD confirmation)")
         self.assertIn("200 SMA", trend_event.message)
         trend_signal.assert_called_once_with("BTCUSDT", "1m", ANY, 200)
 
     @patch("alerts.services._trend_signal")
     @patch("alerts.services._macd_signal")
-    def test_trend_confirmation_skipped_when_price_below_sma(self, macd_signal, trend_signal):
+    def test_trend_info_fires_even_when_price_below_sma(self, macd_signal, trend_signal):
+        """The trend filter only adds info — it must never suppress the MACD alert."""
         alert = Alert.objects.create(
             symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
             timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
@@ -234,12 +235,36 @@ class TrendFilterTests(TestCase):
 
         titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
         self.assertIn("BTCUSDT MACD 1m bullish cross", titles)
-        self.assertFalse(any("TREND" in title for title in titles))
+        self.assertIn("BTCUSDT TREND 1m bearish (MACD confirmation)", titles)
 
     @patch("alerts.services._trend_signal")
     @patch("alerts.services._macd_signal")
-    def test_trend_failure_skips_alert_cycle(self, macd_signal, trend_signal):
-        Alert.objects.create(
+    def test_trend_classified_balanced_within_sma_tolerance(self, macd_signal, trend_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = {
+            "bar_time": bar_time, "previous_diff": -0.2, "current_diff": 0.1,
+            "close": 100, "macd": 1, "signal": 0.9, "atr": 1,
+        }
+        trend_signal.return_value = {
+            "bar_time": bar_time, "sma": 100.05, "close": 100, "trend": "downtrend",
+        }
+
+        check_alerts()
+
+        titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+        self.assertIn("BTCUSDT MACD 1m bullish cross", titles)
+        self.assertIn("BTCUSDT TREND 1m balanced (MACD confirmation)", titles)
+
+    @patch("alerts.services._trend_signal")
+    @patch("alerts.services._macd_signal")
+    def test_trend_failure_does_not_stop_macd_alert(self, macd_signal, trend_signal):
+        alert = Alert.objects.create(
             symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
             timeframe="1m", frequency=Alert.Frequency.EVERY, trend_enabled=True,
             last_bar_open_time=timezone.now() - timedelta(minutes=2),
@@ -254,7 +279,82 @@ class TrendFilterTests(TestCase):
 
         check_alerts()
 
-        self.assertEqual(TriggerEvent.objects.count(), 0)
+        titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+        self.assertEqual(["BTCUSDT MACD 1m bullish cross"], titles)
+
+
+class RsiFilterInfoTests(TestCase):
+    def _cross_setup(self, rsi_value):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, rsi_enabled=True,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        return alert, bar_time
+
+    def _macd_return(self, bar_time):
+        return {
+            "bar_time": bar_time, "previous_diff": -0.2, "current_diff": 0.1,
+            "close": 100, "macd": 1, "signal": 0.9, "atr": 1,
+        }
+
+    @patch("alerts.services._rsi_signal")
+    @patch("alerts.services._macd_signal")
+    def test_rsi_info_classified_bullish_bearish_balanced(self, macd_signal, rsi_signal):
+        for rsi_value, expected_state in ((78, "bullish"), (22, "bearish"), (55, "balanced")):
+            with self.subTest(rsi_value=rsi_value):
+                TriggerEvent.objects.all().delete()
+                Alert.objects.all().delete()
+                alert, bar_time = self._cross_setup(rsi_value)
+                macd_signal.return_value = self._macd_return(bar_time)
+                rsi_signal.return_value = {
+                    "bar_time": bar_time, "rsi": rsi_value, "close": 100,
+                }
+
+                check_alerts()
+
+                titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+                self.assertIn("BTCUSDT MACD 1m bullish cross", titles)
+                self.assertIn(f"BTCUSDT RSI 1m {expected_state} (MACD confirmation)", titles)
+
+    @patch("alerts.services._rsi_signal")
+    @patch("alerts.services._macd_signal")
+    def test_rsi_info_respects_custom_levels(self, macd_signal, rsi_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, rsi_enabled=True,
+            rsi_period=14, rsi_oversold=45, rsi_overbought=55,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = self._macd_return(bar_time)
+        rsi_signal.return_value = {"bar_time": bar_time, "rsi": 50, "close": 100}
+
+        check_alerts()
+
+        titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+        self.assertIn("BTCUSDT RSI 1m balanced (MACD confirmation)", titles)
+
+    @patch("alerts.services._rsi_signal")
+    @patch("alerts.services._macd_signal")
+    def test_rsi_failure_does_not_stop_macd_alert(self, macd_signal, rsi_signal):
+        alert = Alert.objects.create(
+            symbol="BTCUSDT", kind=Alert.Kind.MACD, condition=Alert.Condition.CROSS_UP,
+            timeframe="1m", frequency=Alert.Frequency.EVERY, rsi_enabled=True,
+            last_bar_open_time=timezone.now() - timedelta(minutes=2),
+            last_macd_diff=-0.2,
+        )
+        bar_time = timezone.now() - timedelta(minutes=1)
+        macd_signal.return_value = self._macd_return(bar_time)
+        rsi_signal.return_value = None
+
+        check_alerts()
+
+        titles = [event.title for event in TriggerEvent.objects.filter(alert=alert)]
+        self.assertEqual(["BTCUSDT MACD 1m bullish cross"], titles)
 
 
 class TelegramAdminTests(TestCase):
