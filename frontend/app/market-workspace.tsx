@@ -19,7 +19,7 @@ export type Drawing = {
   hidden?: boolean; extend?: boolean; width: number; opacity: number; repeat?: boolean;
 };
 type LineAlert = {
-  id: number; symbol: string; kind: "price" | "macd"; price: string | null;
+  id: number; symbol: string; kind: "price" | "macd" | "rsi"; price: string | null;
   line_type?: string; line_t1?: string | null; line_price1?: string | null; line_t2?: string | null;
   line_price2?: string | null; line_extend?: boolean; active: boolean; condition: string; frequency: string;
 };

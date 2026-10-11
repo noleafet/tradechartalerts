@@ -83,6 +83,7 @@ class Alert(models.Model):
     class Kind(models.TextChoices):
         PRICE = "price", "Price"
         MACD = "macd", "MACD cross"
+        RSI = "rsi", "RSI"
 
     class Condition(models.TextChoices):
         CROSS_UP = "cross_up", "Crosses above"
@@ -116,6 +117,14 @@ class Alert(models.Model):
     last_macd_gap_percent = models.FloatField(null=True, blank=True)
     last_macd_warning_threshold = models.PositiveSmallIntegerField(null=True, blank=True)
     cooldown_seconds = models.PositiveIntegerField(default=60)
+    rsi_period = models.PositiveSmallIntegerField(default=14, null=True, blank=True)
+    rsi_oversold = models.FloatField(default=30, null=True, blank=True)
+    rsi_overbought = models.FloatField(default=70, null=True, blank=True)
+    last_rsi_value = models.FloatField(null=True, blank=True)
+    macd_threshold_5 = models.BooleanField(default=False, help_text="Enable 5% MACD cross approach threshold")
+    macd_threshold_10 = models.BooleanField(default=False, help_text="Enable 10% MACD cross approach threshold")
+    rsi_enabled = models.BooleanField(default=False, help_text="Enable RSI check after MACD trigger")
+    macd_triggered = models.BooleanField(default=False, help_text="Track if MACD has triggered for cascading RSI alert")
 
     # Optional line-based price alert, preserving the drawing alert semantics of TradeChartAlert.
     line_type = models.CharField(max_length=8, choices=LineType.choices, blank=True, default="")
@@ -132,7 +141,12 @@ class Alert(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        target = f"MACD {self.timeframe}" if self.kind == self.Kind.MACD else str(self.price or "line")
+        if self.kind == self.Kind.MACD:
+            target = f"MACD {self.timeframe}"
+        elif self.kind == self.Kind.RSI:
+            target = f"RSI {self.timeframe}"
+        else:
+            target = str(self.price or "line")
         return f"{self.symbol} {self.condition} {target}"
 
 

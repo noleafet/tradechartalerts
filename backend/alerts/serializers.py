@@ -5,6 +5,7 @@ from .models import Alert, TriggerEvent, WatchlistSymbol
 TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d", "1w"}
 PRICE_CONDITIONS = {"cross_up", "cross_down", "cross", "above", "below"}
 MACD_CONDITIONS = {"cross_up", "cross_down", "cross"}
+RSI_CONDITIONS = {"cross_up", "cross_down", "cross", "above", "below"}
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -14,9 +15,11 @@ class AlertSerializer(serializers.ModelSerializer):
             "id", "symbol", "kind", "condition", "price", "timeframe", "note",
             "frequency", "active", "cooldown_seconds", "line_type", "line_t1",
             "line_price1", "line_t2", "line_price2", "line_extend", "created_at",
-            "updated_at", "last_triggered_at",
+            "updated_at", "last_triggered_at", "rsi_period", "rsi_oversold",
+            "rsi_overbought", "last_rsi_value", "macd_threshold_5", "macd_threshold_10",
+            "rsi_enabled", "macd_triggered",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "last_triggered_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "last_triggered_at", "last_rsi_value", "macd_triggered"]
 
     def validate_symbol(self, value):
         value = value.strip().upper()
@@ -58,6 +61,27 @@ class AlertSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"timeframe": f"Choose one of {', '.join(sorted(TIMEFRAMES))}."})
             if attrs.get("line_type", ""):
                 raise serializers.ValidationError({"line_type": "Line alerts are only available for price alerts."})
+            if attrs.get("rsi_enabled", False):
+                raise serializers.ValidationError({"rsi_enabled": "RSI enable is only available for RSI alerts."})
+        elif kind == Alert.Kind.RSI:
+            if condition not in RSI_CONDITIONS:
+                raise serializers.ValidationError({"condition": "RSI supports cross_up, cross_down, cross, above, or below."})
+            timeframe = attrs.get("timeframe", getattr(self.instance, "timeframe", ""))
+            if timeframe not in TIMEFRAMES:
+                raise serializers.ValidationError({"timeframe": f"Choose one of {', '.join(sorted(TIMEFRAMES))}."})
+            if attrs.get("line_type", ""):
+                raise serializers.ValidationError({"line_type": "Line alerts are only available for price alerts."})
+            rsi_period = attrs.get("rsi_period", getattr(self.instance, "rsi_period", 14))
+            if rsi_period is not None and (rsi_period < 2 or rsi_period > 100):
+                raise serializers.ValidationError({"rsi_period": "RSI period must be between 2 and 100."})
+            rsi_oversold = attrs.get("rsi_oversold", getattr(self.instance, "rsi_oversold", 30))
+            if rsi_oversold is not None and (rsi_oversold < 0 or rsi_oversold > 100):
+                raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be between 0 and 100."})
+            rsi_overbought = attrs.get("rsi_overbought", getattr(self.instance, "rsi_overbought", 70))
+            if rsi_overbought is not None and (rsi_overbought < 0 or rsi_overbought > 100):
+                raise serializers.ValidationError({"rsi_overbought": "RSI overbought must be between 0 and 100."})
+            if rsi_oversold is not None and rsi_overbought is not None and rsi_oversold >= rsi_overbought:
+                raise serializers.ValidationError({"rsi_oversold": "RSI oversold must be less than overbought."})
         return attrs
 
 

@@ -135,6 +135,42 @@ def _macd_signal(symbol, timeframe, exchange):
     }
 
 
+def _rsi_signal(symbol, timeframe, exchange, period=14):
+    candles = _candles_for(symbol, timeframe, exchange, 500)
+    now_ms = int(time.time() * 1000)
+    closed = [candle for candle in candles if int(candle[6]) < now_ms]
+    if len(closed) < period + 1:
+        return None
+    closes = [float(candle[4]) for candle in closed]
+
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i - 1]
+        gains.append(change if change > 0 else 0)
+        losses.append(-change if change < 0 else 0)
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        rsi = 100
+    else:
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+    index = len(closed) - 1
+    return {
+        "bar_time": datetime.fromtimestamp(int(closed[index][0]) / 1000, tz=dt_timezone.utc),
+        "rsi": rsi,
+        "close": closes[index],
+    }
+
+
 def _line_level(alert, at):
     if not alert.line_type or alert.line_price1 is None:
         return float(alert.price) if alert.price is not None else None
@@ -269,7 +305,8 @@ def check_alerts(*, stdout=None):
     alerts = list(Alert.objects.filter(active=True).order_by("id"))
     price_symbols = {a.symbol for a in alerts if a.kind == Alert.Kind.PRICE}
     macd_keys = {(a.symbol, a.timeframe) for a in alerts if a.kind == Alert.Kind.MACD}
-    prices, macd_values = {}, {}
+    rsi_keys = {(a.symbol, a.timeframe, a.rsi_period or 14) for a in alerts if a.kind == Alert.Kind.RSI}
+    prices, macd_values, rsi_values = {}, {}, {}
     for symbol in sorted(price_symbols):
         try:
             prices[symbol] = _price_for(symbol, exchange)
@@ -280,15 +317,23 @@ def check_alerts(*, stdout=None):
             macd_values[(symbol, timeframe)] = _macd_signal(symbol, timeframe, exchange)
         except (requests.RequestException, KeyError, ValueError) as exc:
             logger.warning("Could not fetch %s %s MACD: %s", symbol, timeframe, exc)
+    for symbol, timeframe, period in sorted(rsi_keys):
+        try:
+            rsi_values[(symbol, timeframe, period)] = _rsi_signal(symbol, timeframe, exchange, period)
+        except (requests.RequestException, KeyError, ValueError) as exc:
+            logger.warning("Could not fetch %s %s RSI: %s", symbol, timeframe, exc)
 
     fired = []
     now = timezone.now()
     for snapshot in alerts:
         value = prices.get(snapshot.symbol) if snapshot.kind == Alert.Kind.PRICE else None
         macd = macd_values.get((snapshot.symbol, snapshot.timeframe)) if snapshot.kind == Alert.Kind.MACD else None
+        rsi = rsi_values.get((snapshot.symbol, snapshot.timeframe, snapshot.rsi_period or 14)) if snapshot.kind == Alert.Kind.RSI else None
         if snapshot.kind == Alert.Kind.PRICE and value is None:
             continue
         if snapshot.kind == Alert.Kind.MACD and macd is None:
+            continue
+        if snapshot.kind == Alert.Kind.RSI and rsi is None:
             continue
         with transaction.atomic():
             alert = Alert.objects.select_for_update().filter(pk=snapshot.pk, active=True).first()
@@ -316,7 +361,7 @@ def check_alerts(*, stdout=None):
                         message=f"Last price {value:g}; target {level:g}" + (f" — {alert.note}" if alert.note else ""),
                         observed_value=value,
                     )
-            else:
+            elif alert.kind == Alert.Kind.MACD:
                 bar_time = macd["bar_time"]
                 if alert.last_bar_open_time is None:
                     # Arm at the latest closed candle; never report an old cross on first startup.
@@ -344,7 +389,13 @@ def check_alerts(*, stdout=None):
                     alert.last_macd_warning_threshold = warning_state
                     alert.last_macd_diff = current_diff
                     alert.last_macd_gap_percent = current_gap_percent
-                    for threshold in thresholds:
+                    # Filter thresholds based on enabled flags
+                    enabled_thresholds = []
+                    if alert.macd_threshold_5 and 5 in thresholds:
+                        enabled_thresholds.append(5)
+                    if alert.macd_threshold_10 and 10 in thresholds:
+                        enabled_thresholds.append(10)
+                    for threshold in enabled_thresholds:
                         side = "bullish" if current_diff < 0 else "bearish"
                         fired.append(TriggerEvent.objects.create(
                             alert=alert,
@@ -367,6 +418,50 @@ def check_alerts(*, stdout=None):
                             message=f"MACD {macd['macd']:.8g}, signal {macd['signal']:.8g}, close {macd['close']:g}" + (f" — {alert.note}" if alert.note else ""),
                             observed_value=macd["close"],
                         )
+                        alert.macd_triggered = True
+            elif alert.kind == Alert.Kind.RSI:
+                bar_time = rsi["bar_time"]
+                rsi_value = rsi["rsi"]
+                rsi_oversold = alert.rsi_oversold or 30
+                rsi_overbought = alert.rsi_overbought or 70
+                previous_rsi = alert.last_rsi_value
+                hit = False
+                level = None
+
+                # Check cascading condition: if RSI is enabled, only trigger after MACD has triggered
+                if alert.rsi_enabled and not alert.macd_triggered:
+                    # Skip RSI check until MACD triggers
+                    alert.last_rsi_value = rsi_value
+                    alert.last_observed_value = rsi["close"]
+                else:
+                    if alert.condition == Alert.Condition.ABOVE:
+                        level = rsi_overbought
+                        hit = rsi_value >= level
+                    elif alert.condition == Alert.Condition.BELOW:
+                        level = rsi_oversold
+                        hit = rsi_value <= level
+                    elif alert.condition == Alert.Condition.CROSS_UP:
+                        level = rsi_overbought
+                        hit = previous_rsi is not None and previous_rsi < level <= rsi_value
+                    elif alert.condition == Alert.Condition.CROSS_DOWN:
+                        level = rsi_oversold
+                        hit = previous_rsi is not None and previous_rsi > level >= rsi_value
+                    elif alert.condition == Alert.Condition.CROSS:
+                        if previous_rsi is not None:
+                            hit = (previous_rsi < rsi_oversold <= rsi_value) or (previous_rsi > rsi_overbought >= rsi_value)
+
+                    alert.last_rsi_value = rsi_value
+                    alert.last_observed_value = rsi["close"]
+
+                    if hit and _may_fire(alert, now):
+                        direction = alert.get_condition_display().lower()
+                        event = TriggerEvent.objects.create(
+                            alert=alert,
+                            symbol=alert.symbol,
+                            title=f"{alert.symbol} RSI {alert.timeframe} {direction} {level:g}",
+                            message=f"RSI {rsi_value:.2f}, close {rsi['close']:g}" + (f" — {alert.note}" if alert.note else ""),
+                            observed_value=rsi["close"],
+                        )
             if event is not None:
                 alert.last_triggered_at = now
                 if alert.frequency == Alert.Frequency.ONCE:
@@ -374,7 +469,8 @@ def check_alerts(*, stdout=None):
                 fired.append(event)
             alert.save(update_fields=[
                 "active", "last_triggered_at", "last_observed_value", "last_bar_open_time",
-                "last_macd_diff", "last_macd_gap_percent", "last_macd_warning_threshold", "updated_at"
+                "last_macd_diff", "last_macd_gap_percent", "last_macd_warning_threshold",
+                "last_rsi_value", "macd_triggered", "updated_at"
             ])
 
     for event in fired:
