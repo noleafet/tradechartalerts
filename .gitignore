@@ -47,6 +47,7 @@ frontend/.env.local
 frontend/node_modules/
 frontend/.next/
 frontend/tsconfig.tsbuildinfo
+docker-compose.yml
 
 # -----------------------------------------------------------------------------
 # Test Database Files

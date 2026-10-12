@@ -11,6 +11,73 @@ const intervals = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"] as const;
 const intervalSeconds: Record<(typeof intervals)[number], number> = {
   "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800,
 };
+type Timeframe = (typeof intervals)[number];
+type Exchange = NonNullable<Props["exchange"]>;
+/** Public REST bases — market data is read straight from the exchange in the browser. */
+const exchangeBases: Record<Exchange, string> = {
+  binance: "https://data-api.binance.vision/api/v3",
+  bybit: "https://api.bybit.com/v5/market",
+};
+/** Bybit v5 takes minutes as a string, and days/weeks as single letters. */
+const bybitIntervals: Record<Timeframe, string> = {
+  "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D", "1w": "W",
+};
+const exchangeName: Record<Exchange, string> = { binance: "Binance", bybit: "Bybit" };
+
+type RawCandle = [string, string, string, string, string, string, ...string[]];
+
+async function readJson<T>(response: Response): Promise<T | null> {
+  try { return await response.json() as T; } catch { return null; }
+}
+
+function messageOf(payload: unknown, fallback: string) {
+  const detail = (payload as { retMsg?: unknown; msg?: unknown } | null) ?? {};
+  const text = [detail.retMsg, detail.msg].find((value) => typeof value === "string" && value);
+  return (text as string) || fallback;
+}
+
+/** Normalised OHLCV — both exchanges expose the same array indices, only ordering differs. */
+async function fetchCandles(symbol: string, timeframe: Timeframe, limit: number, exchange: Exchange): Promise<Bar[]> {
+  const bybit = exchange === "bybit";
+  const url = bybit
+    ? `${exchangeBases.bybit}/kline?category=spot&symbol=${encodeURIComponent(symbol)}&interval=${bybitIntervals[timeframe]}&limit=${limit}`
+    : `${exchangeBases.binance}/klines?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&limit=${limit}`;
+  const response = await fetch(url, { cache: "no-store" });
+  const payload = await readJson<unknown>(response);
+  const list = bybit ? (payload as { result?: { list?: RawCandle[] } })?.result?.list : Array.isArray(payload) ? payload as RawCandle[] : null;
+  if (!response.ok || !Array.isArray(list) || !list.length) {
+    throw new Error(messageOf(payload, `Market data is unavailable for ${symbol} on ${exchangeName[exchange]}.`));
+  }
+  // Bybit lists newest-first; Binance is already oldest-first.
+  const ordered = bybit ? [...list].reverse() : list;
+  return ordered.flatMap((candle) => {
+    const bar = {
+      time: Math.floor(Number(candle[0]) / 1000) as UTCTimestamp,
+      open: Number(candle[1]), high: Number(candle[2]), low: Number(candle[3]),
+      close: Number(candle[4]), volume: Number(candle[5]),
+    };
+    // A partial or empty row would poison the chart scale.
+    return Number.isFinite(bar.open) && Number.isFinite(bar.high) && Number.isFinite(bar.low)
+      && Number.isFinite(bar.close) && bar.time > 0 ? [bar] : [];
+  });
+}
+
+async function fetchQuote(symbol: string, exchange: Exchange): Promise<{ price: number; change: number }> {
+  const bybit = exchange === "bybit";
+  const url = bybit
+    ? `${exchangeBases.bybit}/tickers?category=spot&symbol=${encodeURIComponent(symbol)}`
+    : `${exchangeBases.binance}/ticker/24hr?type=MINI&symbol=${encodeURIComponent(symbol)}`;
+  const response = await fetch(url, { cache: "no-store" });
+  const payload = await readJson<unknown>(response);
+  const item = bybit ? (payload as { result?: { list?: Record<string, string>[] } })?.result?.list?.[0] : payload as Record<string, string> | null;
+  const price = Number(item?.lastPrice);
+  if (!response.ok || !Number.isFinite(price)) {
+    throw new Error(messageOf(payload, `${symbol} is not available on ${exchangeName[exchange]}.`));
+  }
+  if (bybit) return { price, change: Number(item!.price24hPcnt) * 100 };
+  const opening = Number(item!.openPrice);
+  return { price, change: opening ? (price - opening) / opening * 100 : 0 };
+}
 const lineTools = ["trend", "ray", "hline", "hray"] as const;
 type Tool = (typeof lineTools)[number];
 type Bar = { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number };
@@ -118,6 +185,7 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [watchQuotes, setWatchQuotes] = useState<Record<string, { price: number; change: number }>>({});
   const [watchDraft, setWatchDraft] = useState("");
+  const [watchNotice, setWatchNotice] = useState("");
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [tool, setTool] = useState<Tool | null>(null);
@@ -167,10 +235,12 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
         rows = await response.json() as { symbol: string }[];
         if (!active) return;
         setWatchlist(rows.map((row) => row.symbol));
+        setWatchNotice("");
         try { localStorage.removeItem("tradechart.watchlist"); localStorage.removeItem("cd.watch"); } catch { /* Storage can be unavailable. */ }
       } catch {
         if (active) {
           setWatchlist(legacy);
+          setWatchNotice("Could not load the saved watchlist from the backend, so the list is not being saved.");
           setMessage("Could not load the saved watchlist from the backend.");
         }
       } finally {
@@ -260,10 +330,7 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
     macdChart.timeScale().subscribeVisibleLogicalRangeChange((range) => { if (range) chart.timeScale().setVisibleLogicalRange(range); });
 
     async function requestCandles(limit: number): Promise<Bar[]> {
-      const response = await fetch(`${API}/market/candles/?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&limit=${limit}`, { cache: "no-store" });
-      const payload = await response.json().catch(() => []) as Bar[] | { detail?: string };
-      if (!response.ok || !Array.isArray(payload)) throw new Error((payload as { detail?: string }).detail ?? "Market data is unavailable.");
-      return payload.map((bar) => ({ ...bar, time: bar.time as UTCTimestamp }));
+      return fetchCandles(symbol, timeframe, limit, exchange);
     }
 
     function renderBars(data: Bar[]) {
@@ -379,9 +446,7 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
       const symbols = [...new Set([...watchlist, symbol])];
       await Promise.all(symbols.map(async (pair) => {
         try {
-          const response = await fetch(`${API}/market/quote/?symbol=${encodeURIComponent(pair)}`, { cache: "no-store" });
-          if (!response.ok) return;
-          const item = await response.json() as { price: number; change: number };
+          const item = await fetchQuote(pair, exchange);
           if (valid) setWatchQuotes((quotes) => ({ ...quotes, [pair]: item }));
         } catch { /* A missing quote does not interrupt the chart. */ }
       }));
@@ -401,26 +466,39 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
   function toggleIndicator(key: keyof Preferences["indicators"]) { setPreferences((current) => ({ ...current, indicators: { ...current.indicators, [key]: !current.indicators[key] } })); }
   function submitSymbol(event: FormEvent) { event.preventDefault(); if (draft.trim()) onSymbolChange(draft.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")); }
   async function addWatch(event: FormEvent) {
-    event.preventDefault(); const pair = watchDraft.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (!pair || watchlist.includes(pair)) return;
+    event.preventDefault();
+    const pair = watchDraft.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!pair) { setWatchNotice("Enter a market symbol, for example ADAUSDT."); return; }
+    if (pair.length > 24) { setWatchNotice("Use a symbol of 24 characters or fewer."); return; }
+    if (watchlist.includes(pair)) { setWatchNotice(`${pair} is already on the watchlist.`); return; }
+    setWatchNotice(`Saving ${pair}…`);
     try {
-      const quoteResponse = await fetch(`${API}/market/quote/?symbol=${encodeURIComponent(pair)}`, { cache: "no-store" });
-      if (!quoteResponse.ok) throw new Error(`${pair} is not available on ${exchange === "binance" ? "Binance" : "Bybit"}.`);
+      // The database is the source of truth, so the pair is stored before anything else is attempted.
       const response = await fetch(`${API}/watchlist/`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: pair }), cache: "no-store",
       });
       if (!response.ok) throw new Error("Could not save this pair to the database watchlist.");
-      setWatchlist((items) => items.includes(pair) ? items : [...items, pair]);
-      setWatchDraft(""); setMessage("");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not add this pair."); }
+      const saved = await response.json() as { symbol?: string };
+      const symbol = saved.symbol || pair;
+      setWatchlist((items) => items.includes(symbol) ? items : [...items, symbol]);
+      setWatchDraft("");
+      // The quote only fills the price column. A rate-limited, blocked, or temporarily down
+      // exchange must not undo the save, so this is best effort and the row is polled again shortly.
+      try {
+        const quote = await fetchQuote(symbol, exchange);
+        setWatchQuotes((quotes) => ({ ...quotes, [symbol]: quote }));
+        setWatchNotice(`${symbol} added to the saved watchlist.`);
+      } catch { setWatchNotice(`${symbol} saved. Its price is not available on ${exchangeName[exchange]} right now.`); }
+    } catch (error) { setWatchNotice(error instanceof Error ? error.message : "Could not add this pair."); }
   }
   async function removeWatch(pair: string) {
     try {
       const response = await fetch(`${API}/watchlist/${encodeURIComponent(pair)}/`, { method: "DELETE" });
       if (!response.ok) throw new Error("Could not remove this pair from the database watchlist.");
       setWatchlist((items) => items.filter((item) => item !== pair));
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not remove this pair."); }
+      setWatchNotice(`${pair} removed from the saved watchlist.`);
+    } catch (error) { setWatchNotice(error instanceof Error ? error.message : "Could not remove this pair."); }
   }
   function chooseTool(next: Tool) { const value = tool === next ? null : next; setTool(value); modeRef.current = value; pendingRef.current = null; setPendingPoint(false); }
   function removeDrawing(id: string) {
@@ -551,6 +629,7 @@ export default function MarketWorkspace({ symbol, exchange = "binance", onExchan
           <button className="watch-pair" onClick={() => onSymbolChange(pair)}>{pair}</button><span>{fmt(watchQuotes[pair]?.price ?? null)}</span><small className={(watchQuotes[pair]?.change ?? 0) >= 0 ? "positive" : "negative"}>{watchQuotes[pair] ? `${watchQuotes[pair].change >= 0 ? "+" : ""}${watchQuotes[pair].change.toFixed(2)}%` : "–"}</small><button className="remove-watch" disabled={!watchlistLoaded} aria-label={`Remove ${pair}`} onClick={() => void removeWatch(pair)}>×</button>
         </div>)}</div>
         <form className="watch-add" onSubmit={addWatch}><input aria-label="Add symbol to watchlist" value={watchDraft} disabled={!watchlistLoaded} placeholder="Add symbol, e.g. ADAUSDT" onChange={(event) => setWatchDraft(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} /><button type="submit" disabled={!watchlistLoaded}>Add</button></form>
+        {watchNotice && <p className="watch-notice" role="status">{watchNotice}</p>}
       </section>
       <section className="panel workspace-panel">
         <div className="panel-head"><div><p className="eyebrow">ANNOTATE</p><h2>Drawings</h2></div><span className="count">{drawings.filter((line) => line.symbol === symbol).length} ON {symbol}</span></div>

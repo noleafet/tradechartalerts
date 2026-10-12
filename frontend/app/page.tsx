@@ -21,6 +21,56 @@ const conditions: Record<string, string> = {
   cross_up: "crosses above", cross_down: "crosses below", cross: "crosses",
   above: "is above", below: "is below",
 };
+type MacdCondition = "cross_up" | "cross_down" | "cross";
+const timeframes = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"] as const;
+const macdConditions: MacdCondition[] = ["cross_up", "cross_down", "cross"];
+const macdConditionText: Record<MacdCondition, string> = {
+  cross_up: "crosses above the signal line",
+  cross_down: "crosses below the signal line",
+  cross: "crosses the signal line in either direction",
+};
+const defaultRsiSettings = { period: "14", oversold: "30", overbought: "70" };
+
+/** Turn a DRF validation payload into a short sentence instead of raw JSON. */
+function readableError(reason: unknown, fallback: string) {
+  if (!(reason instanceof Error)) return fallback;
+  const text = reason.message;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const messages = Object.entries(parsed).flatMap(([field, value]) => {
+      const label = field === "detail" ? "" : `${field.replace(/_/g, " ")}: `;
+      const items = Array.isArray(value) ? value : [value];
+      return items
+        .map((item) => String(item).trim())
+        .filter(Boolean)
+        .map((item) => `${label}${item.replace(/\.?$/, ".")}`);
+    }).filter(Boolean);
+    if (messages.length) return messages.join(" · ");
+  } catch { /* The API answered with plain text. */ }
+  return text || fallback;
+}
+
+/** Mirror the serializer rules so bad combinations fail before the request. */
+function macdFieldErrors(input: {
+  rsiEnabled: boolean; rsi: { period: string; oversold: string; overbought: string };
+  trendEnabled: boolean; trendPeriod: string;
+}) {
+  const errors: Record<string, string> = {};
+  if (input.rsiEnabled) {
+    const period = Number(input.rsi.period);
+    const oversold = Number(input.rsi.oversold);
+    const overbought = Number(input.rsi.overbought);
+    if (!Number.isInteger(period) || period < 2 || period > 100) errors.rsi_period = "Use a whole number between 2 and 100.";
+    if (!Number.isFinite(oversold) || oversold < 0 || oversold > 100) errors.rsi_oversold = "Use a value between 0 and 100.";
+    if (!Number.isFinite(overbought) || overbought < 0 || overbought > 100) errors.rsi_overbought = "Use a value between 0 and 100.";
+    if (!errors.rsi_oversold && !errors.rsi_overbought && oversold >= overbought) errors.rsi_oversold = "Oversold must be lower than overbought.";
+  }
+  if (input.trendEnabled) {
+    const period = Number(input.trendPeriod);
+    if (!Number.isInteger(period) || period < 2 || period > 500) errors.trend_period = "Use a whole number between 2 and 500.";
+  }
+  return errors;
+}
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -44,7 +94,15 @@ export default function Home() {
   const [exchange, setExchange] = useState<Exchange>("binance");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [targetPrice, setTargetPrice] = useState("");
+  const [macdTimeframe, setMacdTimeframe] = useState<(typeof timeframes)[number]>("1h");
+  const [macdCondition, setMacdCondition] = useState<MacdCondition>("cross_up");
+  const [macdThreshold5, setMacdThreshold5] = useState(false);
+  const [macdThreshold10, setMacdThreshold10] = useState(false);
   const [rsiEnabled, setRsiEnabled] = useState(false);
+  const [rsiSettings, setRsiSettings] = useState(defaultRsiSettings);
+  const [trendEnabled, setTrendEnabled] = useState(false);
+  const [trendPeriod, setTrendPeriod] = useState("200");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [notificationAvailable, setNotificationAvailable] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [clearedThrough, setClearedThrough] = useState("");
@@ -67,30 +125,6 @@ export default function Home() {
     try { if (localStorage.getItem("tradechart.theme") === "dark") setTheme("dark"); } catch { /* Storage can be unavailable. */ }
   }, []);
 
-  useEffect(() => {
-    const rsiCheckbox = document.querySelector('input[name="rsi_enabled"]') as HTMLInputElement;
-    const rsiSettings = document.querySelector('.rsi-settings') as HTMLElement;
-    if (rsiCheckbox && rsiSettings) {
-      const updateRsiVisibility = () => {
-        rsiSettings.style.display = rsiCheckbox.checked ? 'block' : 'none';
-      };
-      rsiCheckbox.addEventListener('change', updateRsiVisibility);
-      updateRsiVisibility();
-      return () => rsiCheckbox.removeEventListener('change', updateRsiVisibility);
-    }
-  }, [kind]);
-  useEffect(() => {
-    const trendCheckbox = document.querySelector('input[name="trend_enabled"]') as HTMLInputElement;
-    const trendSettings = document.querySelector('.trend-settings') as HTMLElement;
-    if (trendCheckbox && trendSettings) {
-      const updateTrendVisibility = () => {
-        trendSettings.style.display = trendCheckbox.checked ? 'block' : 'none';
-      };
-      trendCheckbox.addEventListener('change', updateTrendVisibility);
-      updateTrendVisibility();
-      return () => trendCheckbox.removeEventListener('change', updateTrendVisibility);
-    }
-  }, [kind]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try { localStorage.setItem("tradechart.theme", theme); } catch { /* Storage can be unavailable. */ }
@@ -128,7 +162,7 @@ export default function Home() {
       seenEvents.current = new Set(nextEvents.map((item) => item.id));
       setAlerts(nextAlerts); setEvents(nextEvents); setExchange(nextExchange.exchange); setError("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not reach the API.");
+      setError(readableError(reason, "Could not reach the API."));
     } finally { setRefreshing(false); }
   }, []);
 
@@ -137,7 +171,7 @@ export default function Home() {
       const saved = await api<{ exchange: Exchange }>("/exchange/", { method: "POST", body: JSON.stringify({ exchange: next }) });
       setExchange(saved.exchange);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not change the exchange.");
+      setError(readableError(reason, "Could not change the exchange."));
       void refresh();
     }
   }
@@ -149,7 +183,7 @@ export default function Home() {
   }, [refresh]);
 
   async function createAlert(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setError("");
+    event.preventDefault(); setBusy(true); setError(""); setFieldErrors({});
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const payload: Record<string, string | number | boolean> = {
@@ -159,50 +193,43 @@ export default function Home() {
     };
     if (kind === "price") payload.price = Number(form.get("price"));
     else {
-      payload.timeframe = String(form.get("timeframe"));
-      if (kind === "macd") {
-        payload.macd_threshold_5 = form.get("macd_threshold_5") === "on";
-        payload.macd_threshold_10 = form.get("macd_threshold_10") === "on";
-        payload.rsi_enabled = form.get("rsi_enabled") === "on";
-        if (payload.rsi_enabled) {
-          // Use recommended RSI settings based on MACD timeframe
-          const timeframe = String(form.get("timeframe"));
-          const rsiSettings: Record<string, { period: number; oversold: number; overbought: number }> = {
-            "1m": { period: 14, oversold: 30, overbought: 70 },
-            "5m": { period: 14, oversold: 30, overbought: 70 },
-            "15m": { period: 14, oversold: 30, overbought: 70 },
-            "1h": { period: 14, oversold: 30, overbought: 70 },
-            "4h": { period: 14, oversold: 30, overbought: 70 },
-            "1d": { period: 14, oversold: 30, overbought: 70 },
-            "1w": { period: 14, oversold: 30, overbought: 70 },
-          };
-          const settings = rsiSettings[timeframe] || rsiSettings["1h"];
-          payload.rsi_period = settings.period;
-          payload.rsi_oversold = settings.oversold;
-          payload.rsi_overbought = settings.overbought;
-        }
-        payload.trend_enabled = form.get("trend_enabled") === "on";
-        if (payload.trend_enabled) {
-          // Trend filter defaults to the 200 SMA
-          payload.trend_period = Number(form.get("trend_period")) || 200;
-        }
+      payload.timeframe = macdTimeframe;
+      payload.condition = macdCondition;
+      payload.macd_threshold_5 = macdThreshold5;
+      payload.macd_threshold_10 = macdThreshold10;
+      payload.rsi_enabled = rsiEnabled;
+      if (rsiEnabled) {
+        payload.rsi_period = Number(rsiSettings.period);
+        payload.rsi_oversold = Number(rsiSettings.oversold);
+        payload.rsi_overbought = Number(rsiSettings.overbought);
       }
+      payload.trend_enabled = trendEnabled;
+      if (trendEnabled) payload.trend_period = Number(trendPeriod);
+      const errors = macdFieldErrors({ rsiEnabled, rsi: rsiSettings, trendEnabled, trendPeriod });
+      if (Object.keys(errors).length) { setFieldErrors(errors); setBusy(false); return; }
     }
     try {
       await api<AlertItem>("/alerts/", { method: "POST", body: JSON.stringify(payload) });
-      formElement.reset(); setTargetPrice(""); setRsiEnabled(false); await refresh(); requestNotifications();
+      formElement.reset(); resetMacdForm(); await refresh(); requestNotifications();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create alert.");
+      setError(readableError(reason, "Could not create alert."));
     } finally { setBusy(false); }
+  }
+
+  function resetMacdForm() {
+    setTargetPrice(""); setMacdTimeframe("1h"); setMacdCondition("cross_up");
+    setMacdThreshold5(false); setMacdThreshold10(false);
+    setRsiEnabled(false); setRsiSettings(defaultRsiSettings);
+    setTrendEnabled(false); setTrendPeriod("200"); setFieldErrors({});
   }
 
   async function toggleAlert(item: AlertItem) {
     try { await api<AlertItem>(`/alerts/${item.id}/`, { method: "PATCH", body: JSON.stringify({ active: !item.active }) }); await refresh(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update alert."); }
+    catch (reason) { setError(readableError(reason, "Could not update alert.")); }
   }
   async function deleteAlert(id: number) {
     try { await api<void>(`/alerts/${id}/`, { method: "DELETE" }); await refresh(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete alert."); }
+    catch (reason) { setError(readableError(reason, "Could not delete alert.")); }
   }
 
   async function createLineAlert(drawing: Drawing, condition: string, frequency: string) {
@@ -216,7 +243,7 @@ export default function Home() {
       if (matching) await api<AlertItem>(`/alerts/${matching.id}/`, { method: "PATCH", body: JSON.stringify({ ...geometry, condition, frequency, active: true }) });
       else await api<AlertItem>("/alerts/", { method: "POST", body: JSON.stringify({ symbol: drawing.symbol, kind: "price", condition, frequency, note: "", ...geometry }) });
       await refresh();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create drawing alert."); }
+    } catch (reason) { setError(readableError(reason, "Could not create drawing alert.")); }
   }
   async function updateLineAlert(drawing: Drawing) {
     const matching = alerts.find((item) => item.id === Number(drawing.id));
@@ -228,7 +255,7 @@ export default function Home() {
         line_extend: !!drawing.extend, frequency: drawing.repeat ? "every" : "once",
       }) });
       await refresh();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update drawing alert."); }
+    } catch (reason) { setError(readableError(reason, "Could not update drawing alert.")); }
   }
   async function deleteLineAlert(drawing: Drawing) {
     const matching = alerts.find((item) => item.symbol === drawing.symbol && item.line_type === drawing.type && item.line_t1 && Math.abs(new Date(item.line_t1).getTime() / 1000 - drawing.t1) < 2 && Number(item.line_price1) === drawing.p1);
@@ -243,6 +270,16 @@ export default function Home() {
     if ("Notification" in window) void Notification.requestPermission();
   }
   const activeCount = alerts.filter((item) => item.active).length;
+  const macdSummary = (() => {
+    const warnings = [macdThreshold5 ? "5%" : "", macdThreshold10 ? "10%" : ""].filter(Boolean);
+    const parts = [`Notify when the ${marketSymbol || "selected pair"} MACD (${macdTimeframe}) ${macdConditionText[macdCondition]}.`];
+    parts.push(warnings.length
+      ? ` Early warning at ${warnings.join(" and ")} of ATR.`
+      : " No early warning.");
+    if (rsiEnabled) parts.push(` RSI context: period ${rsiSettings.period || "–"}, ${rsiSettings.oversold || "–"} oversold / ${rsiSettings.overbought || "–"} overbought.`);
+    if (trendEnabled) parts.push(` Trend context: ${trendPeriod || "–"} SMA.`);
+    return parts.join("");
+  })();
   return (
     <main className="shell min-h-screen w-full px-4 sm:px-6 lg:px-10 2xl:px-14">
       <header className="topbar">
@@ -278,29 +315,54 @@ export default function Home() {
           <div className="kind-switch"><button className={kind === "price" ? "selected" : ""} onClick={() => setKind("price")}>Price level</button><button className={kind === "macd" ? "selected" : ""} onClick={() => setKind("macd")}>MACD cross</button></div>
           <form onSubmit={createAlert} className="alert-form">
             <label>Market symbol<input name="symbol" placeholder="BTCUSDT" required maxLength={24} autoComplete="off" value={marketSymbol} onChange={(event) => setMarketSymbol(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} /></label>
-            {kind === "price" ? <label>Target price<input name="price" type="number" step="any" min="0" placeholder="68000.00" required value={targetPrice} onChange={(event) => setTargetPrice(event.target.value)} /></label> : <label>Timeframe<select name="timeframe" defaultValue="1h">{["1m", "5m", "15m", "1h", "4h", "1d", "1w"].map((tf) => <option key={tf}>{tf}</option>)}</select></label>}
-            <label>Condition<select name="condition" key={kind}>{(kind === "price" ? ["cross_up", "cross_down", "cross", "above", "below"] : ["cross_up", "cross_down", "cross"]).map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>
+            {kind === "price" ? <label>Target price<input name="price" type="number" step="any" min="0" placeholder="68000.00" required value={targetPrice} onChange={(event) => setTargetPrice(event.target.value)} /></label> : null}
+            {kind === "price" && <label>Condition<select name="condition">{["cross_up", "cross_down", "cross", "above", "below"].map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>}
             {kind === "macd" && (
-              <>
-                <div className="checkbox-group">
-                  <label className="checkbox-label"><input type="checkbox" name="macd_threshold_5" /> Enable 5% MACD approach threshold</label>
-                  <label className="checkbox-label"><input type="checkbox" name="macd_threshold_10" /> Enable 10% MACD approach threshold</label>
+              <div className="macd-config">
+                <div className="config-row">
+                  <label>Timeframe<select name="timeframe" value={macdTimeframe} onChange={(event) => setMacdTimeframe(event.target.value as (typeof timeframes)[number])}>{timeframes.map((tf) => <option key={tf} value={tf}>{tf}</option>)}</select></label>
+                  <label>Condition<select name="condition" value={macdCondition} onChange={(event) => setMacdCondition(event.target.value as MacdCondition)}>{macdConditions.map((condition) => <option key={condition} value={condition}>{conditions[condition]}</option>)}</select></label>
                 </div>
-                <div className="checkbox-group">
-                  <label className="checkbox-label"><input type="checkbox" name="rsi_enabled" /> Enable RSI info — bullish / bearish / balanced (with MACD)</label>
+
+                <fieldset className="config-block">
+                  <legend>Early warning</legend>
+                  <p className="config-hint">Also notify while the MACD line is still approaching the signal line, before the cross happens. Distance is measured as a percentage of the 14-period ATR.</p>
+                  <div className="checkbox-group">
+                    <label className="checkbox-label"><input type="checkbox" name="macd_threshold_5" checked={macdThreshold5} onChange={(event) => setMacdThreshold5(event.target.checked)} /> 5% of ATR away</label>
+                    <label className="checkbox-label"><input type="checkbox" name="macd_threshold_10" checked={macdThreshold10} onChange={(event) => setMacdThreshold10(event.target.checked)} /> 10% of ATR away</label>
+                  </div>
+                  <p className="config-note">Both can be enabled — you get one notice per threshold crossed.</p>
+                </fieldset>
+
+                <fieldset className="config-block">
+                  <legend>RSI context <span className="legend-note">optional</span></legend>
+                  <label className="checkbox-label"><input type="checkbox" name="rsi_enabled" checked={rsiEnabled} onChange={(event) => setRsiEnabled(event.target.checked)} /> Attach an RSI reading to every MACD notification</label>
+                  {rsiEnabled && <div className="config-row">
+                    <label>Period<input name="rsi_period" type="number" min="2" max="100" value={rsiSettings.period} onChange={(event) => setRsiSettings({ ...rsiSettings, period: event.target.value })} /></label>
+                    <label>Oversold<input name="rsi_oversold" type="number" min="0" max="100" value={rsiSettings.oversold} onChange={(event) => setRsiSettings({ ...rsiSettings, oversold: event.target.value })} /></label>
+                    <label>Overbought<input name="rsi_overbought" type="number" min="0" max="100" value={rsiSettings.overbought} onChange={(event) => setRsiSettings({ ...rsiSettings, overbought: event.target.value })} /></label>
+                  </div>}
+                  {fieldErrors.rsi_period && <p className="field-error">{fieldErrors.rsi_period}</p>}
+                  {fieldErrors.rsi_oversold && <p className="field-error">{fieldErrors.rsi_oversold}</p>}
+                  {fieldErrors.rsi_overbought && <p className="field-error">{fieldErrors.rsi_overbought}</p>}
+                  <p className="config-note">Context only — labels momentum as bullish / bearish / balanced and never blocks the cross.</p>
+                </fieldset>
+
+                <fieldset className="config-block">
+                  <legend>Trend context <span className="legend-note">optional</span></legend>
+                  <label className="checkbox-label"><input type="checkbox" name="trend_enabled" checked={trendEnabled} onChange={(event) => setTrendEnabled(event.target.checked)} /> Attach a trend reading to every MACD notification</label>
+                  {trendEnabled && <div className="config-row">
+                    <label>SMA period<input name="trend_period" type="number" min="2" max="500" value={trendPeriod} onChange={(event) => setTrendPeriod(event.target.value)} /></label>
+                  </div>}
+                  {fieldErrors.trend_period && <p className="field-error">{fieldErrors.trend_period}</p>}
+                  <p className="config-note">Context only — compares the close against the SMA and never blocks the cross.</p>
+                </fieldset>
+
+                <div className="macd-summary" aria-live="polite">
+                  <b>This alert will</b>
+                  <p>{macdSummary}</p>
                 </div>
-                <div className="rsi-settings" style={{ display: "none" }}>
-                  <label>RSI Period<input name="rsi_period" type="number" min="2" max="100" defaultValue="14" /></label>
-                  <label>Oversold Level<input name="rsi_oversold" type="number" min="0" max="100" defaultValue="30" /></label>
-                  <label>Overbought Level<input name="rsi_overbought" type="number" min="0" max="100" defaultValue="70" /></label>
-                </div>
-                <div className="checkbox-group">
-                  <label className="checkbox-label"><input type="checkbox" name="trend_enabled" /> Enable trend info — bullish / bearish / balanced (with MACD)</label>
-                </div>
-                <div className="trend-settings" style={{ display: "none" }}>
-                  <label>SMA Period<input name="trend_period" type="number" min="2" max="500" defaultValue="200" /></label>
-                </div>
-              </>
+              </div>
             )}
             <label>Trigger frequency<select name="frequency"><option value="once">Once — disable after trigger</option><option value="every">Repeat — 60 second cooldown</option></select></label>
             <label className="wide">Note <span className="optional">OPTIONAL</span><input name="note" maxLength={240} placeholder="Add a reminder for this alert" /></label>

@@ -6,7 +6,9 @@ from django.shortcuts import redirect
 from django.urls import path, reverse
 import requests
 
-from .models import Alert, AppConfiguration, Exchange, Notification, TriggerEvent
+from .models import (
+    Alert, AppConfiguration, Exchange, Notification, TriggerEvent, WatchlistSymbol,
+)
 from .services import find_telegram_chat, send_telegram_test
 
 admin.site.site_header = "TradeChartAlert administration"
@@ -124,3 +126,10 @@ class TriggerEventAdmin(admin.ModelAdmin):
     list_display = ("symbol", "title", "triggered_at")
     list_filter = ("symbol",)
     search_fields = ("title", "message", "symbol")
+
+
+@admin.register(WatchlistSymbol)
+class WatchlistSymbolAdmin(admin.ModelAdmin):
+    list_display = ("symbol", "position", "created_at")
+    search_fields = ("symbol",)
+    ordering = ("position", "id")
